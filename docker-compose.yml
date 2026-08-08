@@ -1,0 +1,23 @@
+services:
+  trader-agent:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    env_file: .env
+    command: ["python3", "dashboard_server.py"]
+    environment:
+      - DASHBOARD_HOST=0.0.0.0
+    ports:
+      # Bound to the VPS's own loopback, not 0.0.0.0 — reach it via an SSH tunnel
+      # (ssh -L 8765:localhost:8765 user@vps) rather than exposing it publicly.
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    depends_on:
+      - trader-agent

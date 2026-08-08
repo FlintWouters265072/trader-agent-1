@@ -1,0 +1,10 @@
+.git
+.claude
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+automation.log
+launchd_stdout.log
+launchd_stderr.log
