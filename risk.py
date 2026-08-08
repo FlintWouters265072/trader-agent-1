@@ -14,6 +14,20 @@ def total_exposure_value(position_summaries: list[dict], symbol: str) -> float:
     )
 
 
+def pending_buy_exposure_value(open_orders: list[dict], symbol: str, price: float) -> float:
+    """Dollar value of not-yet-filled buy orders for `symbol`. Positions only reflect fills,
+    so a cycle that runs again before a prior order fills (e.g. market closed, day order still
+    queued) would otherwise see zero exposure and keep buying — this closes that gap by folding
+    unfilled quantity into the same cap, priced at the current live quote."""
+    symbol = symbol.strip().upper()
+    unfilled_qty = sum(
+        float(o.get("qty") or 0) - float(o.get("filled_qty") or 0)
+        for o in open_orders
+        if (o.get("symbol") or "").strip().upper() == symbol and o.get("side") == "buy"
+    )
+    return max(0.0, unfilled_qty) * price
+
+
 def clamp_to_exposure_cap_value(existing_exposure_value: float, requested_usd: float, max_symbol_exposure_usd: float) -> float:
     room = max_symbol_exposure_usd - existing_exposure_value
     if room <= 0:

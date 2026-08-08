@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 from alpaca_client import AlpacaClient, AlpacaError
 from config import Config, ConfigError
 from decision import build_prompt, get_decision, summarize_positions
-from risk import clamp_order_value, clamp_to_exposure_cap_value, round_quantity, total_exposure_value
+from risk import (
+    clamp_order_value,
+    clamp_to_exposure_cap_value,
+    pending_buy_exposure_value,
+    round_quantity,
+    total_exposure_value,
+)
 
 LOG_PATH = "decisions.jsonl"
 
@@ -120,6 +126,12 @@ def main() -> int:
     existing_exposure_value = total_exposure_value(summarize_positions(positions), symbol)
 
     if decision["action"] == "buy":
+        try:
+            open_orders = alpaca.get_orders(status="open")
+        except AlpacaError as e:
+            print(f"Warning: could not fetch open orders, exposure cap may undercount pending buys: {e}", file=sys.stderr)
+            open_orders = []
+        existing_exposure_value += pending_buy_exposure_value(open_orders, symbol, price)
         order_usd = clamp_to_exposure_cap_value(existing_exposure_value, order_usd, config.max_symbol_exposure_usd)
     else:
         # Never sell more than what's actually held — avoids accidentally opening a short.
