@@ -7,11 +7,19 @@ Then open http://127.0.0.1:8765 (or set DASHBOARD_PORT to change the port).
 """
 from __future__ import annotations
 
+import html
 import os
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, redirect, request, url_for
 
+from config import (
+    RISK_SETTINGS,
+    effective_risk_settings,
+    reset_risk_overrides,
+    save_risk_overrides,
+    validate_risk_setting,
+)
 from dashboard import (
     STYLE,
     CLOCK_SCRIPT,
@@ -61,14 +69,78 @@ def render_payload() -> dict:
     }
 
 
+def render_risk_settings_card(risk_settings: dict, error: str | None = None, submitted=None) -> str:
+    rows = []
+    for key, spec in RISK_SETTINGS.items():
+        current = submitted.get(key) if submitted else risk_settings[key]["value"]
+        badge = (
+            '<span class="badge badge-dry">override</span>'
+            if risk_settings[key]["source"] == "override"
+            else '<span class="badge badge-executed">.env default</span>'
+        )
+        if "choices" in spec:
+            options = "".join(
+                f'<option value="{c}"{" selected" if str(current).lower() == c else ""}>{c.capitalize()}</option>'
+                for c in spec["choices"]
+            )
+            field_html = f'<select name="{key}" required>{options}</select>'
+        else:
+            step = "1" if spec["type"] is int else "any"
+            field_html = (
+                f'<input type="number" name="{key}" value="{html.escape(str(current))}" '
+                f'min="{spec["min"]}" max="{spec["max"]}" step="{step}" required>'
+            )
+        rows.append(f"""
+        <label class="risk-field">
+          <span class="risk-field-label">{html.escape(spec['label'])} {badge}</span>
+          {field_html}
+          <span class="risk-hint">.env default: {risk_settings[key]['env_default']}</span>
+        </label>""")
+    error_html = f'<div class="risk-error">{html.escape(error)}</div>' if error else ""
+    return f"""
+    <div class="card">
+      <h2>Risk settings</h2>
+      {error_html}
+      <form method="post" action="/risk-settings" class="risk-form">
+        {''.join(rows)}
+        <div class="risk-actions">
+          <button type="submit">Save</button>
+          <button type="submit" formaction="/risk-settings/reset" formnovalidate>Reset all to .env defaults</button>
+        </div>
+      </form>
+      <div class="empty">Saved values are written to <code>risk_overrides.json</code> (gitignored, shared with the
+      trading-agent container via the same bind mount as <code>.env</code>) and take effect on the agent's next
+      cycle — no restart needed. A field with no override falls back to its <code>.env</code> value.
+      "Risk appetite" only steers which kinds of assets get picked — it doesn't change the dollar/count caps.</div>
+    </div>"""
+
+
 @app.route("/api/refresh")
 def api_refresh():
     return jsonify(render_payload())
 
 
-@app.route("/")
-def index():
-    payload = render_payload()
+@app.route("/risk-settings", methods=["POST"])
+def update_risk_settings():
+    values = {}
+    for key in RISK_SETTINGS:
+        value, error = validate_risk_setting(key, request.form.get(key, "").strip())
+        if error:
+            payload = render_payload()
+            risk_card = render_risk_settings_card(effective_risk_settings(), error=error, submitted=request.form)
+            return render_page(payload, risk_card), 400
+        values[key] = value
+    save_risk_overrides(values)
+    return redirect(url_for("index"))
+
+
+@app.route("/risk-settings/reset", methods=["POST"])
+def reset_risk_settings():
+    reset_risk_overrides()
+    return redirect(url_for("index"))
+
+
+def render_page(payload: dict, risk_card: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -91,6 +163,7 @@ def index():
       </div>
     </header>
     <div id="content">{payload["html"]}</div>
+    <div id="risk-panel">{risk_card}</div>
   </div>
 </div>
 <script>{CLOCK_SCRIPT}
@@ -114,6 +187,13 @@ setInterval(refresh, REFRESH_MS);
 </script>
 </body>
 </html>"""
+
+
+@app.route("/")
+def index():
+    payload = render_payload()
+    risk_card = render_risk_settings_card(effective_risk_settings())
+    return render_page(payload, risk_card)
 
 
 def main():

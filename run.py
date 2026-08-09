@@ -7,8 +7,10 @@ from alpaca_client import AlpacaClient, AlpacaError
 from config import Config, ConfigError
 from decision import build_prompt, get_decision, summarize_positions
 from risk import (
+    blocks_new_symbol,
     clamp_order_value,
     clamp_to_exposure_cap_value,
+    open_symbol_set,
     pending_buy_exposure_value,
     round_quantity,
     total_exposure_value,
@@ -47,6 +49,14 @@ def main() -> int:
 
     execute = config.execute or args.execute
 
+    print(
+        "Risk settings: "
+        f"max_order_value_usd={config.max_order_value_usd:g} | "
+        f"max_symbol_exposure_usd={config.max_symbol_exposure_usd:g} | "
+        f"max_concurrent_positions={config.max_concurrent_positions} | "
+        f"risk_appetite={config.risk_appetite}"
+    )
+
     alpaca = AlpacaClient(
         config.alpaca_base_url, config.alpaca_data_url, config.alpaca_api_key_id, config.alpaca_api_secret_key
     )
@@ -69,7 +79,7 @@ def main() -> int:
         return 1
 
     prompt = build_prompt(account, positions, quotes)
-    decision = get_decision(prompt, config.anthropic_api_key)
+    decision = get_decision(prompt, config.anthropic_api_key, config.risk_appetite)
 
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -123,7 +133,8 @@ def main() -> int:
 
     requested_usd = decision["amount_usd"]
     order_usd = clamp_order_value(requested_usd, config.max_order_value_usd)
-    existing_exposure_value = total_exposure_value(summarize_positions(positions), symbol)
+    position_summaries = summarize_positions(positions)
+    existing_exposure_value = total_exposure_value(position_summaries, symbol)
 
     if decision["action"] == "buy":
         try:
@@ -131,8 +142,19 @@ def main() -> int:
         except AlpacaError as e:
             print(f"Warning: could not fetch open orders, exposure cap may undercount pending buys: {e}", file=sys.stderr)
             open_orders = []
-        existing_exposure_value += pending_buy_exposure_value(open_orders, symbol, price)
-        order_usd = clamp_to_exposure_cap_value(existing_exposure_value, order_usd, config.max_symbol_exposure_usd)
+
+        open_symbols = open_symbol_set(position_summaries, open_orders)
+        if blocks_new_symbol(open_symbols, symbol, config.max_concurrent_positions):
+            print(
+                f"{symbol} would be a new position, but {len(open_symbols)}/{config.max_concurrent_positions} "
+                f"concurrent positions are already open — refusing to open it. Still free to add to an "
+                f"existing symbol or sell/reduce anything held."
+            )
+            order_usd = 0.0
+            entry["reject_reason"] = "max_concurrent_positions"
+        else:
+            existing_exposure_value += pending_buy_exposure_value(open_orders, symbol, price)
+            order_usd = clamp_to_exposure_cap_value(existing_exposure_value, order_usd, config.max_symbol_exposure_usd)
     else:
         # Never sell more than what's actually held — avoids accidentally opening a short.
         order_usd = min(order_usd, existing_exposure_value)

@@ -606,6 +606,32 @@ STYLE = f"""
   .live-dot.stale {{ background: var(--critical); box-shadow: 0 0 6px var(--critical); }}
   .live-dot.stale::after {{ border-color: var(--critical); }}
   @keyframes radarping {{ 0% {{ transform: scale(0.6); opacity: 0.8; }} 100% {{ transform: scale(2.4); opacity: 0; }} }}
+  .risk-form {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 14px; }}
+  .risk-field {{ display: flex; flex-direction: column; gap: 6px; }}
+  .risk-field-label {{
+    font-family: 'Share Tech Mono', monospace; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;
+  }}
+  .risk-hint {{ font-family: 'Share Tech Mono', monospace; font-size: 10.5px; color: var(--text-muted); }}
+  .risk-form input[type="number"], .risk-form select {{
+    background: var(--panel-solid); border: 1px solid rgba(45,216,255,0.25); border-radius: 4px;
+    color: var(--text-primary); font-family: 'Share Tech Mono', monospace; font-size: 13px;
+    padding: 8px 10px; outline: none;
+  }}
+  .risk-form input[type="number"]:focus, .risk-form select:focus {{ border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan-dim); }}
+  .risk-actions {{ display: flex; gap: 12px; flex-wrap: wrap; }}
+  .risk-error {{
+    color: var(--critical); font-family: 'Share Tech Mono', monospace; font-size: 12.5px;
+    margin-bottom: 14px; padding: 8px 12px; border: 1px solid var(--critical); border-radius: 4px;
+    background: rgba(255,77,109,0.08);
+  }}
+  button {{
+    background: var(--panel-solid); border: 1px solid var(--cyan); color: var(--cyan);
+    font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; padding: 9px 18px; border-radius: 4px; cursor: pointer;
+    transition: background 0.15s, box-shadow 0.15s;
+  }}
+  button:hover {{ background: rgba(45,216,255,0.12); box-shadow: 0 0 12px var(--cyan-dim); }}
 """
 
 CLOCK_SCRIPT = """

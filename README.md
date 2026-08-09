@@ -43,7 +43,10 @@ cycle, not an error.
 Since it can now pick assets that trade at wildly different prices (a $190 stock vs. a $65,000
 Bitcoin), sizing and risk caps are dollar-based instead of share/coin-based: the model proposes a
 dollar amount (`amount_usd`) per trade, which gets converted to a quantity from the live price and
-clamped by `MAX_ORDER_VALUE_USD` / `MAX_SYMBOL_EXPOSURE_USD` (see `.env.example`).
+clamped by `MAX_ORDER_VALUE_USD` / `MAX_SYMBOL_EXPOSURE_USD` / `MAX_CONCURRENT_POSITIONS` (see
+`.env.example`). Separately, `RISK_APPETITE` (low/medium/high) steers what *kind* of assets the
+model favors picking — it's a prompt-level style knob, not another dollar cap. All four of these
+can also be viewed and edited live from the dashboard — see §5.
 
 ## 4. Run
 
@@ -91,6 +94,18 @@ just whatever `dashboard.py` last wrote. Runs only on `127.0.0.1` — nothing is
 machine. Leave it running in a terminal (or `tmux`/a background process) while you work; `Ctrl+C`
 stops it. Equity snapshots are still throttled to once per 5 minutes even though the page polls
 every 15s, so `equity_history.jsonl` doesn't get flooded.
+
+**Risk settings panel.** The live dashboard also has a "Risk settings" card with four fields:
+`MAX_ORDER_VALUE_USD`, `MAX_SYMBOL_EXPOSURE_USD`, `MAX_CONCURRENT_POSITIONS`, and `RISK_APPETITE`
+(low/medium/high — steers what kind of assets get picked, doesn't change the dollar/count caps).
+Each shows whether it's currently using its `.env` default or a saved override. Saving writes to
+`risk_overrides.json` (gitignored) — an override wins over `.env` until you hit "Reset all to .env
+defaults" (or delete the file). Because `run.py` is invoked fresh every ~15-minute cycle and rereads
+its config from disk each time, a dashboard edit takes effect on the very next cycle automatically —
+no restart, no redeploy. In the Docker setup (§7), this works across containers too: the dashboard
+container writes `risk_overrides.json` into the same bind-mounted directory (`.:/app`) the
+`trader-agent` container reads from, so a browser edit on the VPS's dashboard reaches the trading
+loop's next cycle the same way.
 
 ## 6. Automation (runs unattended, auto-executes trades)
 
@@ -188,12 +203,13 @@ this, check in order:
   of the risk controls in `risk.py` — treat that as a deliberate, separate decision, not a config flip.
 - **`run.py`/`dashboard.py` themselves are single-cycle** — `automate.sh` + the launchd job (see
   §6) is what adds scheduling on top; there's no built-in polling loop inside the Python code itself.
-- **Risk controls are still basic.** `risk.py` clamps per-order dollar size and caps total open
-  exposure per symbol (`MAX_SYMBOL_EXPOSURE_USD`, buy-only — selling to close is never blocked,
-  and is separately capped to never exceed what's actually held) — but there's still no daily-loss
-  limit and no cap on the number of *distinct* symbols/positions open at once, and the fully open
-  symbol universe means a single cycle could just as easily open a new position as manage an
-  existing one. Extend before trusting it with anything beyond small paper trades.
+- **Risk controls cover order size, per-symbol exposure, and position count** — `risk.py` clamps
+  per-order dollar size (`MAX_ORDER_VALUE_USD`), caps total open exposure per symbol
+  (`MAX_SYMBOL_EXPOSURE_USD`, buy-only — selling to close is never blocked, and is separately capped
+  to never exceed what's actually held), and caps the number of *distinct* symbols open at once
+  (`MAX_CONCURRENT_POSITIONS`) — all four editable live from the dashboard (§5). Still no daily-loss
+  limit, no portfolio-level (all-positions-combined) exposure cap, and no separate pause/kill switch
+  beyond `EXECUTE=false`. Extend before trusting it with anything beyond small paper trades.
 - **Market hours.** Alpaca's paper trading follows real US market hours for stocks (crypto trades
   24/7) — stock quotes and orders outside regular trading hours may be stale or rejected. `run.py`
   doesn't currently check market status before deciding.

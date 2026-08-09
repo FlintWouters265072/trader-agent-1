@@ -16,7 +16,7 @@ DECISION_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = """You are an active, opportunity-seeking trading decision assistant for a \
+SYSTEM_PROMPT_TEMPLATE = """You are an active, opportunity-seeking trading decision assistant for a \
 paper-trading (simulation) account on Alpaca. Given the current account state and open positions \
 (with their live unrealized P&L and current quotes), decide on exactly one action: buy, sell, or hold.
 
@@ -24,6 +24,8 @@ You are NOT restricted to a fixed watchlist. You may:
 - Buy any actively-traded US-listed stock or ETF by its ticker symbol (e.g. "AAPL", "SPY").
 - Buy any USD-quoted crypto pair Alpaca supports, written as "BASE/USD" (e.g. "BTC/USD", "ETH/USD").
 - Sell/reduce any symbol you currently hold (shown in Open Positions below).
+
+{risk_appetite_guidance}
 
 Rules:
 - Size every buy/sell as a dollar amount in "amount_usd" — the exact share/coin quantity is \
@@ -46,6 +48,38 @@ whether each existing position was considered and why it was kept, closed, or re
 already hold, unless the existing position clearly needs attention (meaningful loss, or a genuinely \
 better opportunity to add).
 - If action is "hold", set symbol to a position you considered (or "" if none held) and amount_usd to 0."""
+
+# Purely a prompt-level style knob — steers WHAT KIND of assets get picked, never the dollar/count
+# sizing rules above (those come from risk.py/config.py and apply identically at every level).
+RISK_APPETITE_GUIDANCE = {
+    "low": (
+        "Risk appetite: LOW. Prioritize capital preservation over growth. Prefer large-cap, "
+        "well-established, liquid names and broad-market/diversified ETFs (e.g. SPY, VOO, VTI, QQQ) "
+        "over individual speculative stocks. Avoid small-cap, pre-profit, highly volatile, or "
+        "thinly-traded names. Avoid or minimize crypto — if used at all, keep it a small allocation "
+        "in major coins (BTC/USD, ETH/USD) only. Favor steady, modest, lower-volatility returns over "
+        "high-upside bets."
+    ),
+    "medium": (
+        "Risk appetite: MEDIUM. Balance growth and stability. A mix of established large/mid-cap "
+        "growth companies and some diversified ETF exposure is appropriate. Moderate volatility is "
+        "acceptable in pursuit of above-market returns. Major crypto (BTC/USD, ETH/USD) can be used "
+        "as part of a diversified allocation, not the majority of it."
+    ),
+    "high": (
+        "Risk appetite: HIGH. Actively seek higher-growth, higher-volatility opportunities in pursuit "
+        "of outsized returns — smaller-cap growth names, high-beta tech, emerging themes, and momentum "
+        "plays are all fair game, not just blue-chip defensives. Larger crypto allocations (including "
+        "altcoins Alpaca supports) are acceptable. You should be willing to accept larger drawdowns "
+        "and concentrated, high-conviction bets in exchange for higher expected return — don't default "
+        "to the safe, diversified choice just because it's safe."
+    ),
+}
+
+
+def build_system_prompt(risk_appetite: str) -> str:
+    guidance = RISK_APPETITE_GUIDANCE.get((risk_appetite or "").strip().lower(), RISK_APPETITE_GUIDANCE["medium"])
+    return SYSTEM_PROMPT_TEMPLATE.format(risk_appetite_guidance=guidance)
 
 
 def summarize_positions(positions: list[dict]) -> list[dict]:
@@ -87,12 +121,12 @@ def build_prompt(account: dict, positions: list[dict], quotes: dict[str, dict]) 
     return "\n".join(lines)
 
 
-def get_decision(prompt: str, api_key: str) -> dict:
+def get_decision(prompt: str, api_key: str, risk_appetite: str = "medium") -> dict:
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
         model=MODEL,
         max_tokens=1024,
-        system=SYSTEM_PROMPT,
+        system=build_system_prompt(risk_appetite),
         messages=[{"role": "user", "content": prompt}],
         output_config={"format": {"type": "json_schema", "schema": DECISION_SCHEMA}},
     )

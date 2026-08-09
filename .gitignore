@@ -11,6 +11,7 @@ venv/
 decisions.jsonl
 dashboard.html
 equity_history.jsonl
+risk_overrides.json
 automation.log
 dashboard_server.log
 launchd_stdout.log
