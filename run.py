@@ -10,9 +10,10 @@ from risk import (
     blocks_new_symbol,
     clamp_order_value,
     clamp_to_exposure_cap_value,
+    held_quantity,
     open_symbol_set,
     pending_buy_exposure_value,
-    pending_sell_exposure_value,
+    pending_sell_quantity,
     round_quantity,
     total_exposure_value,
 )
@@ -159,9 +160,12 @@ def main() -> int:
     else:
         # Never sell more than what's actually held and not already reserved by a still-unfilled
         # sell order — avoids both accidentally opening a short and re-requesting shares a prior
-        # queued order (e.g. illiquid/halted quote) already holds, which Alpaca rejects with a 403.
-        sellable_value = existing_exposure_value - pending_sell_exposure_value(open_orders, symbol, price)
-        order_usd = min(order_usd, max(0.0, sellable_value))
+        # queued order (e.g. illiquid/halted quote) already holds, which Alpaca rejects with a
+        # 403. Netted in share units, then priced once at the live quote — netting in dollars
+        # instead would price the held side and the pending-order side differently and recover
+        # the wrong quantity whenever the position's cached price and a fresh quote diverge.
+        sellable_qty = max(0.0, held_quantity(position_summaries, symbol) - pending_sell_quantity(open_orders, symbol))
+        order_usd = min(order_usd, sellable_qty * price)
 
     quantity = round_quantity(order_usd / price, asset.get("fractionable", False))
 
