@@ -10,6 +10,7 @@ import html
 import json
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -19,11 +20,27 @@ DECISIONS_PATH = "decisions.jsonl"
 EQUITY_PATH = "equity_history.jsonl"
 OUTPUT_PATH = "dashboard.html"
 
-STATUS_GOOD = "#33ffb0"
-STATUS_CRITICAL = "#ff4d6d"
-STATUS_MUTED = "#5b7c92"
+STATUS_GOOD = "#00ff88"
+STATUS_CRITICAL = "#ff2d55"
+STATUS_MUTED = "#5b8a9a"
 
 ACTION_COLOR = {"buy": STATUS_GOOD, "sell": STATUS_CRITICAL, "hold": STATUS_MUTED}
+
+AMSTERDAM_TZ = ZoneInfo("Europe/Amsterdam")
+
+
+def format_amsterdam_time(timestamp: str) -> str:
+    """Parses a stored ISO UTC timestamp into Amsterdam local time, e.g. '13-8-2026 18:03'."""
+    if not timestamp:
+        return ""
+    try:
+        dt = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return timestamp
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone(AMSTERDAM_TZ)
+    return f"{local.day}-{local.month}-{local.year} {local.strftime('%H:%M')}"
 
 
 def load_decisions() -> list[dict]:
@@ -262,8 +279,14 @@ def render_pl_chart(history: list[dict]) -> str:
     return f"""
     <svg viewBox="0 0 {width} {height}" class="timeline-svg" role="img" aria-label="Unrealized profit and loss over time">
       <line x1="{pad}" y1="{zero_y:.1f}" x2="{width - pad}" y2="{zero_y:.1f}" class="baseline" />
-      <polyline points="{polyline_points}" fill="none" stroke="{line_color}" stroke-width="2" \
-stroke-linejoin="round" stroke-linecap="round" />
+      <defs>
+        <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="{line_color}" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="{line_color}" stop-opacity="0.0"/>
+        </linearGradient>
+      </defs>
+      <polygon points="{polyline_points} {end_x:.1f},{zero_y:.1f} {pad:.1f},{zero_y:.1f}" fill="url(#chartGrad)" />
+      <polyline points="{polyline_points}" fill="none" stroke="{line_color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
       {"".join(dots)}
       <text x="{end_x:.1f}" y="{end_y - 12:.1f}" class="axis-label pl-end-label" text-anchor="end">{end_label}</text>
       <text x="{pad}" y="{height - 10}" class="axis-label">{axis_label_start}</text>
@@ -286,21 +309,28 @@ def render_profit_tracker(snapshot: dict | None, history: list[dict]) -> str:
     total_value = float(account.get("portfolio_value", 0) or 0)
     cash_balance = float(account.get("cash", 0) or 0)
 
-    pl_color = None
-    if unrealized is not None:
-        pl_color = STATUS_GOOD if unrealized >= 0 else STATUS_CRITICAL
+    pl_color = STATUS_GOOD if unrealized >= 0 else STATUS_CRITICAL
+    
+    # Generate SVG Gauge
+    # 270 degree arc for the gauge
+    gauge = f"""
+    <div class="gauge-container">
+      <svg class="gauge-svg" viewBox="0 0 200 200">
+        <path class="gauge-arc-bg" d="M 40 160 A 85 85 0 1 1 160 160" />
+        <path class="gauge-arc-fg" d="M 40 160 A 85 85 0 1 1 160 160" />
+        <g class="gauge-ticks">
+          {"".join(f'<line x1="100" y1="15" x2="100" y2="25" stroke="var(--cyan-dim)" stroke-width="2" transform="rotate({i*15} 100 100)" />' for i in range(24))}
+        </g>
+        <text x="100" y="105" class="gauge-text-value">${total_value:,.0f}</text>
+        <text x="100" y="125" class="gauge-text-label">{currency} BALANCE</text>
+      </svg>
+      <div class="pl-val" style="color: {pl_color}">P&amp;L: {format_signed(unrealized, currency)}</div>
+      <div style="font-size: 12px; color: var(--text-secondary); margin-top: 5px;">CASH: {cash_balance:,.2f} {currency}</div>
+    </div>
+    """
 
-    tiles = "".join([
-        stat_tile(
-            "Unrealized P&L",
-            format_signed(unrealized, currency) if unrealized is not None else "—",
-            pl_color,
-        ),
-        stat_tile("Total account value", f"{total_value:,.2f} {currency}" if total_value is not None else "—"),
-        stat_tile("Cash balance", f"{cash_balance:,.2f} {currency}" if cash_balance is not None else "—"),
-    ])
+    return f'<div class="profit-grid"><div>{gauge}</div><div>{render_pl_chart(history)}</div></div>'
 
-    return f'<div class="tiles">{tiles}</div>{render_pl_chart(history)}'
 
 
 def render_table(decisions: list[dict]) -> str:
@@ -322,7 +352,7 @@ def render_table(decisions: list[dict]) -> str:
             qty_display += f" (model asked for {requested})"
         rows.append(f"""
         <tr>
-          <td class="mono">{html.escape(d.get("timestamp", ""))}</td>
+          <td class="mono">{html.escape(format_amsterdam_time(d.get("timestamp", "")))}</td>
           <td><span class="dot" style="background:{color}"></span>{html.escape(action.upper())}</td>
           <td>{html.escape(dec.get("symbol", ""))}</td>
           <td class="mono">{html.escape(qty_display)}</td>
@@ -332,7 +362,7 @@ def render_table(decisions: list[dict]) -> str:
     return f"""
     <table class="log-table">
       <thead>
-        <tr><th>Time (UTC)</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Status</th><th>Rationale</th></tr>
+        <tr><th>Time (Amsterdam)</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Status</th><th>Rationale</th></tr>
       </thead>
       <tbody>{"".join(rows)}</tbody>
     </table>"""
@@ -460,178 +490,278 @@ def build_content(decisions: list[dict], stats: dict, snapshot: dict | None, equ
     </div>"""
 
 
-STYLE = f"""
-  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap');
+STYLE = """
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap');
 
-  .viz-root {{
-    color-scheme: dark;
-    --void:        #04070b;
-    --panel:       rgba(9, 20, 30, 0.66);
-    --panel-solid: #071019;
-    --cyan:        #2dd8ff;
-    --cyan-dim:    rgba(45,216,255,0.35);
-    --cyan-glow:   rgba(45,216,255,0.55);
-    --text-primary:   #eaf7ff;
-    --text-secondary: #85b4c9;
-    --text-muted:     #4c6c7d;
-    --gridline: rgba(45,216,255,0.14);
-    --baseline: rgba(45,216,255,0.30);
-    --border:   rgba(45,216,255,0.28);
-    --good:     {STATUS_GOOD};
-    --critical: {STATUS_CRITICAL};
-  }}
-  * {{ box-sizing: border-box; }}
-  html, body {{ background: var(--void); }}
-  body {{
+  :root {
+    --void: #0a0e1a;
+    --panel: rgba(13, 21, 37, 0.75);
+    --panel-solid: #0d1525;
+    --cyan: #00d4ff;
+    --cyan-dim: rgba(0, 212, 255, 0.25);
+    --cyan-glow: rgba(0, 212, 255, 0.6);
+    --green: #00ff88;
+    --red: #ff2d55;
+    --muted: #5b8a9a;
+    --text-primary: #e8f4ff;
+    --text-secondary: #7db4cc;
+    --text-muted: #3d6478;
+    --border: rgba(0, 212, 255, 0.2);
+    --gridline: rgba(0, 212, 255, 0.08);
+  }
+  
+  * { box-sizing: border-box; }
+  html, body { background: var(--void); min-height: 100vh; }
+  body {
     margin: 0;
     position: relative;
     overflow-x: hidden;
-    font-family: 'Rajdhani', system-ui, -apple-system, "Segoe UI", sans-serif;
-    color: var(--text-primary);
-    background:
-      radial-gradient(ellipse 900px 500px at 15% -10%, rgba(45,216,255,0.12), transparent 60%),
-      radial-gradient(ellipse 700px 500px at 105% 110%, rgba(255,176,32,0.07), transparent 60%),
-      var(--void);
-  }}
-  body::before {{
-    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-    background-image:
-      linear-gradient(var(--gridline) 1px, transparent 1px),
-      linear-gradient(90deg, var(--gridline) 1px, transparent 1px);
-    background-size: 44px 44px;
-    opacity: 0.35;
-    -webkit-mask-image: radial-gradient(ellipse 1000px 800px at 50% 0%, black, transparent 75%);
-            mask-image: radial-gradient(ellipse 1000px 800px at 50% 0%, black, transparent 75%);
-  }}
-  body::after {{
-    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-    background-image: repeating-linear-gradient(0deg, rgba(45,216,255,0.035) 0px, rgba(45,216,255,0.035) 1px, transparent 1px, transparent 3px);
-    mix-blend-mode: screen;
-  }}
-  .viz-root {{ position: relative; z-index: 1; }}
-  .wrap {{ max-width: 1080px; margin: 0 auto; padding: 36px 24px 72px; }}
-  header {{
-    display: flex; justify-content: space-between; align-items: flex-end;
-    margin-bottom: 28px; flex-wrap: wrap; gap: 14px;
-    padding-bottom: 18px; border-bottom: 1px solid var(--border);
-  }}
-  .hdr-title h1 {{
-    margin: 0; font-family: 'Orbitron', sans-serif; font-weight: 700;
-    font-size: 25px; letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--text-primary);
-    text-shadow: 0 0 10px var(--cyan-glow), 0 0 28px rgba(45,216,255,0.25);
-  }}
-  .hdr-sub {{
-    font-family: 'Share Tech Mono', monospace; font-size: 11px; letter-spacing: 0.28em;
-    text-transform: uppercase; color: var(--cyan); opacity: 0.75; margin-top: 4px;
-  }}
-  .hdr-status {{ text-align: right; }}
-  .meta {{ color: var(--text-secondary); font-size: 12.5px; font-family: 'Share Tech Mono', monospace; }}
-  .clock {{
-    font-family: 'Share Tech Mono', monospace; font-size: 15px; color: var(--cyan);
-    text-shadow: 0 0 8px var(--cyan-glow); margin-top: 4px; letter-spacing: 0.06em;
-  }}
-  .card {{
-    position: relative;
-    border-radius: 6px;
-    padding: 22px 24px;
-    margin-bottom: 22px;
-    background:
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) top left / 16px 2px no-repeat,
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) top left / 2px 16px no-repeat,
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) top right / 16px 2px no-repeat,
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) top right / 2px 16px no-repeat,
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) bottom left / 16px 2px no-repeat,
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) bottom left / 2px 16px no-repeat,
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) bottom right / 16px 2px no-repeat,
-      linear-gradient(var(--cyan-dim), var(--cyan-dim)) bottom right / 2px 16px no-repeat,
-      var(--panel);
-    border: 1px solid rgba(45,216,255,0.12);
-    box-shadow: 0 0 0 1px rgba(45,216,255,0.03), 0 12px 30px rgba(0,0,0,0.45);
-    backdrop-filter: blur(6px);
-  }}
-  .card h2 {{
-    font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.16em; color: var(--cyan);
-    margin: 0 0 18px; display: flex; align-items: center; gap: 10px;
-  }}
-  .card h2::after {{ content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--cyan-dim), transparent); }}
-  .tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }}
-  .tile {{
-    background: var(--panel-solid); border: 1px solid rgba(45,216,255,0.14); border-radius: 5px;
-    padding: 14px 16px; position: relative; overflow: hidden;
-  }}
-  .tile::before {{ content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: linear-gradient(90deg, var(--cyan), transparent); opacity: 0.6; }}
-  .tile-label {{
-    font-family: 'Share Tech Mono', monospace; font-size: 10.5px; text-transform: uppercase;
-    letter-spacing: 0.1em; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
-  }}
-  .tile-value {{
-    font-family: 'Orbitron', sans-serif; font-size: 22px; font-weight: 700; color: var(--text-primary);
-    text-shadow: 0 0 12px rgba(45,216,255,0.18); font-variant-numeric: tabular-nums;
-  }}
-  .dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 6px currentColor; }}
-  .empty {{ color: var(--text-muted); font-size: 13px; padding: 12px 0; font-family: 'Rajdhani', sans-serif; }}
-  .timeline-svg {{ width: 100%; height: auto; }}
-  .baseline {{ stroke: var(--baseline); stroke-width: 1; stroke-dasharray: 2 4; }}
-  .axis-label {{ fill: var(--text-muted); font-size: 11px; font-family: 'Share Tech Mono', monospace; }}
-  .pl-end-label {{ fill: var(--text-primary); font-size: 13px; font-weight: 600; font-family: 'Share Tech Mono', monospace; }}
-  .dot-mark {{ cursor: pointer; filter: drop-shadow(0 0 4px currentColor); }}
-  .legend {{ display: flex; gap: 18px; font-size: 11.5px; color: var(--text-secondary); margin-top: 10px; font-family: 'Share Tech Mono', monospace; text-transform: uppercase; letter-spacing: 0.06em; }}
-  .legend span {{ display: inline-flex; align-items: center; gap: 6px; }}
-  table.log-table {{ width: 100%; border-collapse: collapse; font-size: 13px; font-family: 'Rajdhani', sans-serif; }}
-  .log-table th {{
-    text-align: left; color: var(--cyan); font-weight: 600; font-size: 10.5px; text-transform: uppercase;
-    letter-spacing: 0.08em; padding: 9px 12px; border-bottom: 1px solid var(--border);
     font-family: 'Share Tech Mono', monospace;
-  }}
-  .log-table td {{ padding: 9px 12px; border-bottom: 1px solid var(--gridline); vertical-align: top; }}
-  .log-table tr:hover td {{ background: rgba(45,216,255,0.05); }}
-  .mono {{ font-variant-numeric: tabular-nums; font-family: 'Share Tech Mono', monospace; font-size: 12.5px; }}
-  .rationale {{ color: var(--text-secondary); max-width: 420px; }}
-  .badge {{
-    font-family: 'Share Tech Mono', monospace; font-size: 10.5px; padding: 3px 10px; border-radius: 999px;
-    text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid currentColor;
-  }}
-  .badge-executed {{ background: rgba(51,255,176,0.10); color: {STATUS_GOOD}; }}
-  .badge-dry {{ background: rgba(76,108,125,0.14); color: var(--text-secondary); border-color: rgba(76,108,125,0.5); }}
-  .live-dot {{
-    position: relative; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-    background: var(--good); margin-right: 8px; box-shadow: 0 0 6px var(--good), 0 0 14px var(--good);
-  }}
-  .live-dot::after {{
-    content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 1px solid var(--good);
-    opacity: 0.6; animation: radarping 1.8s ease-out infinite;
-  }}
-  .live-dot.stale {{ background: var(--critical); box-shadow: 0 0 6px var(--critical); }}
-  .live-dot.stale::after {{ border-color: var(--critical); }}
-  @keyframes radarping {{ 0% {{ transform: scale(0.6); opacity: 0.8; }} 100% {{ transform: scale(2.4); opacity: 0; }} }}
-  .risk-form {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 14px; }}
-  .risk-field {{ display: flex; flex-direction: column; gap: 6px; }}
-  .risk-field-label {{
-    font-family: 'Share Tech Mono', monospace; font-size: 10.5px; text-transform: uppercase;
-    letter-spacing: 0.1em; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;
-  }}
-  .risk-hint {{ font-family: 'Share Tech Mono', monospace; font-size: 10.5px; color: var(--text-muted); }}
-  .risk-form input[type="number"], .risk-form select {{
-    background: var(--panel-solid); border: 1px solid rgba(45,216,255,0.25); border-radius: 4px;
-    color: var(--text-primary); font-family: 'Share Tech Mono', monospace; font-size: 13px;
-    padding: 8px 10px; outline: none;
-  }}
-  .risk-form input[type="number"]:focus, .risk-form select:focus {{ border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan-dim); }}
-  .risk-actions {{ display: flex; gap: 12px; flex-wrap: wrap; }}
-  .risk-error {{
-    color: var(--critical); font-family: 'Share Tech Mono', monospace; font-size: 12.5px;
-    margin-bottom: 14px; padding: 8px 12px; border: 1px solid var(--critical); border-radius: 4px;
-    background: rgba(255,77,109,0.08);
-  }}
-  button {{
-    background: var(--panel-solid); border: 1px solid var(--cyan); color: var(--cyan);
-    font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.08em; padding: 9px 18px; border-radius: 4px; cursor: pointer;
-    transition: background 0.15s, box-shadow 0.15s;
-  }}
-  button:hover {{ background: rgba(45,216,255,0.12); box-shadow: 0 0 12px var(--cyan-dim); }}
+    color: var(--text-primary);
+    background: radial-gradient(circle at 50% 50%, #0d1525 0%, #0a0e1a 100%);
+  }
+
+  /* Hexagonal grid background */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.15;
+    background-image: url("data:image/svg+xml,%3Csvg width='40' height='69.282' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M40 17.32l-20 11.547L0 17.32V0h40v17.32zm0 34.641l-20 11.547-20-11.547V34.641h40v17.32z' fill='none' stroke='%2300d4ff' stroke-width='1' opacity='0.5'/%3E%3C/svg%3E");
+    background-size: 40px 69.28px;
+    mask-image: radial-gradient(ellipse at center, black 10%, transparent 80%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 10%, transparent 80%);
+  }
+  
+  /* Scan lines */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2));
+    background-size: 100% 4px;
+    opacity: 0.3;
+  }
+
+  #particles {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  .viz-root { position: relative; z-index: 1; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 40px;
+    padding-bottom: 20px;
+    border-bottom: 2px solid var(--border);
+    position: relative;
+  }
+  header::after {
+    content: "";
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 150px;
+    height: 2px;
+    background: var(--cyan);
+    box-shadow: 0 0 10px var(--cyan);
+  }
+
+  .hdr-title h1 {
+    margin: 0;
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 32px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    text-shadow: 0 0 15px var(--cyan-glow), 0 0 30px var(--cyan-dim);
+  }
+  .hdr-sub {
+    font-size: 14px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    margin-top: 8px;
+    text-shadow: 0 0 5px var(--cyan-dim);
+  }
+  
+  .hdr-status { text-align: right; }
+  .meta { color: var(--text-secondary); font-size: 12px; }
+  .clock {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 18px;
+    color: var(--cyan);
+    text-shadow: 0 0 10px var(--cyan-glow);
+    margin-top: 8px;
+    letter-spacing: 0.1em;
+  }
+
+  .live-dot {
+    position: relative; display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--green); margin-right: 10px; box-shadow: 0 0 8px var(--green);
+  }
+  .live-dot::after {
+    content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 1px solid var(--green);
+    opacity: 0; animation: radarping 2s ease-out infinite;
+  }
+  .live-dot.stale { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  .live-dot.stale::after { border-color: var(--red); }
+  @keyframes radarping { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(2.5); opacity: 0; } }
+
+  .card {
+    position: relative;
+    padding: 24px 30px;
+    margin-bottom: 30px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: inset 0 0 20px rgba(0, 212, 255, 0.05), 0 10px 30px rgba(0,0,0,0.5);
+  }
+  /* Dramatic Corner Brackets */
+  .card::before, .card::after {
+    content: ""; position: absolute; width: 20px; height: 20px; border: 2px solid var(--cyan);
+    pointer-events: none; transition: 0.3s;
+  }
+  .card::before { top: -2px; left: -2px; border-right: none; border-bottom: none; box-shadow: -2px -2px 10px var(--cyan-dim); }
+  .card::after { bottom: -2px; right: -2px; border-left: none; border-top: none; box-shadow: 2px 2px 10px var(--cyan-dim); }
+  .card:hover::before { width: 30px; height: 30px; box-shadow: -2px -2px 15px var(--cyan-glow); }
+  .card:hover::after { width: 30px; height: 30px; box-shadow: 2px 2px 15px var(--cyan-glow); }
+  
+  .card h2 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--cyan);
+    margin: 0 0 24px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    text-shadow: 0 0 8px var(--cyan-glow);
+  }
+  .card h2::after {
+    content: ""; flex: 1; height: 1px;
+    background: linear-gradient(90deg, var(--cyan-glow), transparent);
+  }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+  .tile {
+    background: var(--panel-solid);
+    border: 1px solid var(--border);
+    padding: 16px;
+    position: relative;
+    transition: 0.2s;
+  }
+  .tile:hover {
+    border-color: var(--cyan);
+    box-shadow: 0 0 15px var(--cyan-dim);
+    transform: translateY(-2px);
+  }
+  .tile::before {
+    content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 2px;
+    background: var(--cyan); box-shadow: 0 0 8px var(--cyan);
+  }
+  .tile-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em;
+    color: var(--text-secondary); display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  }
+  .tile-value {
+    font-family: 'Orbitron', sans-serif; font-size: 28px; font-weight: 700; color: var(--text-primary);
+    text-shadow: 0 0 15px rgba(255,255,255,0.2);
+  }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+
+  /* SVG & Timeline overrides */
+  .timeline-svg { width: 100%; height: auto; overflow: visible; }
+  .baseline { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 6; }
+  .axis-label { fill: var(--text-secondary); font-size: 11px; letter-spacing: 0.05em; }
+  .pl-end-label { fill: var(--cyan); font-size: 14px; font-weight: bold; font-family: 'Orbitron', sans-serif; text-shadow: 0 0 5px var(--cyan-glow); }
+  .dot-mark { cursor: pointer; transition: 0.2s; }
+  .dot-mark:hover { r: 8; filter: drop-shadow(0 0 8px currentColor); stroke: var(--cyan); }
+  
+  .legend { display: flex; gap: 24px; font-size: 12px; color: var(--text-secondary); margin-top: 16px; text-transform: uppercase; letter-spacing: 0.1em; }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+
+  /* Tables */
+  table.log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .log-table th {
+    text-align: left; color: var(--cyan); font-weight: normal; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.1em; padding: 12px 16px;
+    border-bottom: 1px solid var(--cyan-glow);
+    background: rgba(0, 212, 255, 0.05);
+  }
+  .log-table td { padding: 12px 16px; border-bottom: 1px solid var(--gridline); vertical-align: middle; transition: 0.15s; }
+  .log-table tr:hover td { background: rgba(0, 212, 255, 0.1); text-shadow: 0 0 5px rgba(255,255,255,0.3); }
+  .mono { font-variant-numeric: tabular-nums; }
+  .rationale { color: var(--text-secondary); max-width: 400px; line-height: 1.4; }
+  
+  .badge {
+    font-size: 10px; padding: 4px 10px; border-radius: 2px;
+    text-transform: uppercase; letter-spacing: 0.1em; border: 1px solid currentColor;
+  }
+  .badge-executed { background: rgba(0, 255, 136, 0.1); color: var(--green); box-shadow: inset 0 0 5px rgba(0,255,136,0.3); }
+  .badge-dry { background: rgba(91, 138, 154, 0.1); color: var(--muted); box-shadow: inset 0 0 5px rgba(91,138,154,0.3); }
+  
+  .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; border: 1px dashed var(--border); margin: 10px 0; }
+
+  /* Form & Risk Settings */
+  .risk-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 20px; }
+  .risk-field { display: flex; flex-direction: column; gap: 8px; }
+  .risk-field-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--cyan); display: flex; align-items: center; gap: 10px; }
+  .risk-hint { font-size: 10px; color: var(--text-muted); }
+  .risk-form input[type="number"], .risk-form select {
+    background: rgba(0,0,0,0.5); border: 1px solid var(--border); border-radius: 0;
+    color: var(--text-primary); font-family: 'Share Tech Mono', monospace; font-size: 14px;
+    padding: 10px 12px; outline: none; transition: 0.2s;
+  }
+  .risk-form input[type="number"]:focus, .risk-form select:focus { border-color: var(--cyan); box-shadow: 0 0 10px var(--cyan-dim); background: rgba(0,212,255,0.05); }
+  .risk-actions { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+  .risk-error { color: var(--red); font-size: 13px; margin-bottom: 16px; padding: 12px; border: 1px solid var(--red); background: rgba(255,45,85,0.1); text-shadow: 0 0 5px var(--red); }
+  
+  button {
+    background: transparent; border: 1px solid var(--cyan); color: var(--cyan);
+    font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.15em; padding: 10px 24px; cursor: pointer;
+    transition: 0.2s; position: relative; overflow: hidden;
+  }
+  button:hover {
+    background: var(--cyan); color: var(--void);
+    box-shadow: 0 0 15px var(--cyan-glow);
+  }
+
+  /* SVG Gauges & Centerpiece */
+  .gauge-container {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    position: relative; margin: 30px 0; padding: 20px;
+  }
+  .gauge-svg { width: 300px; height: 300px; filter: drop-shadow(0 0 10px var(--cyan-dim)); }
+  .gauge-arc-bg { fill: none; stroke: var(--border); stroke-width: 10; stroke-linecap: round; }
+  .gauge-arc-fg { fill: none; stroke: var(--cyan); stroke-width: 10; stroke-linecap: round; stroke-dasharray: 600; stroke-dashoffset: 0; animation: dash 2s ease-out forwards; }
+  @keyframes dash { from { stroke-dashoffset: 600; } to { stroke-dashoffset: 150; } }
+  .gauge-ticks { transform-origin: center; animation: spin 60s linear infinite; }
+  @keyframes spin { 100% { transform: rotate(360deg); } }
+  .gauge-text-value { fill: var(--text-primary); font-family: 'Orbitron', sans-serif; font-size: 32px; font-weight: 700; text-anchor: middle; filter: drop-shadow(0 0 5px rgba(255,255,255,0.3)); }
+  .gauge-text-label { fill: var(--text-secondary); font-family: 'Share Tech Mono', monospace; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; text-anchor: middle; }
+  .pl-val { font-family: 'Share Tech Mono', monospace; font-size: 16px; font-weight: bold; margin-top: 15px; }
+  
+  .profit-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 30px; align-items: center; }
+  @media (max-width: 800px) { .profit-grid { grid-template-columns: 1fr; } }
 """
 
 CLOCK_SCRIPT = """
@@ -646,6 +776,58 @@ function tickClock() {
 }
 tickClock();
 setInterval(tickClock, 1000);
+
+// Particle system
+const canvas = document.createElement('canvas');
+canvas.id = 'particles';
+document.body.insertBefore(canvas, document.body.firstChild);
+const ctx = canvas.getContext('2d');
+let w, h, particles;
+
+function initParticles() {
+  w = canvas.width = window.innerWidth;
+  h = canvas.height = window.innerHeight;
+  particles = [];
+  for(let i=0; i<60; i++) {
+    particles.push({
+      x: Math.random()*w, y: Math.random()*h,
+      vx: (Math.random()-0.5)*0.5, vy: (Math.random()-0.5)*0.5,
+      r: Math.random()*1.5 + 0.5
+    });
+  }
+}
+initParticles();
+window.addEventListener('resize', initParticles);
+
+function drawParticles() {
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(0, 212, 255, 0.4)';
+  ctx.strokeStyle = 'rgba(0, 212, 255, 0.1)';
+  
+  for(let i=0; i<particles.length; i++) {
+    let p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    if(p.x < 0 || p.x > w) p.vx *= -1;
+    if(p.y < 0 || p.y > h) p.vy *= -1;
+    
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fill();
+    
+    for(let j=i+1; j<particles.length; j++) {
+      let p2 = particles[j];
+      let dist = Math.hypot(p.x-p2.x, p.y-p2.y);
+      if(dist < 100) {
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+    }
+  }
+  requestAnimationFrame(drawParticles);
+}
+drawParticles();
 """
 
 
