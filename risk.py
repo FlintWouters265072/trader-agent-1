@@ -28,6 +28,21 @@ def pending_buy_exposure_value(open_orders: list[dict], symbol: str, price: floa
     return max(0.0, unfilled_qty) * price
 
 
+def pending_sell_exposure_value(open_orders: list[dict], symbol: str, price: float) -> float:
+    """Dollar value of shares already reserved by not-yet-filled sell orders for `symbol`. A
+    cycle that runs again before a prior sell fills (e.g. an illiquid/halted quote leaves a day
+    order queued) would otherwise try to sell the same shares twice and get rejected with
+    'insufficient qty available for order' — this closes that gap the same way
+    pending_buy_exposure_value does for buys."""
+    symbol = symbol.strip().upper()
+    unfilled_qty = sum(
+        float(o.get("qty") or 0) - float(o.get("filled_qty") or 0)
+        for o in open_orders
+        if (o.get("symbol") or "").strip().upper() == symbol and o.get("side") == "sell"
+    )
+    return max(0.0, unfilled_qty) * price
+
+
 def clamp_to_exposure_cap_value(existing_exposure_value: float, requested_usd: float, max_symbol_exposure_usd: float) -> float:
     room = max_symbol_exposure_usd - existing_exposure_value
     if room <= 0:

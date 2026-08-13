@@ -12,6 +12,7 @@ from risk import (
     clamp_to_exposure_cap_value,
     open_symbol_set,
     pending_buy_exposure_value,
+    pending_sell_exposure_value,
     round_quantity,
     total_exposure_value,
 )
@@ -136,13 +137,13 @@ def main() -> int:
     position_summaries = summarize_positions(positions)
     existing_exposure_value = total_exposure_value(position_summaries, symbol)
 
-    if decision["action"] == "buy":
-        try:
-            open_orders = alpaca.get_orders(status="open")
-        except AlpacaError as e:
-            print(f"Warning: could not fetch open orders, exposure cap may undercount pending buys: {e}", file=sys.stderr)
-            open_orders = []
+    try:
+        open_orders = alpaca.get_orders(status="open")
+    except AlpacaError as e:
+        print(f"Warning: could not fetch open orders, exposure/sell sizing may be off: {e}", file=sys.stderr)
+        open_orders = []
 
+    if decision["action"] == "buy":
         open_symbols = open_symbol_set(position_summaries, open_orders)
         if blocks_new_symbol(open_symbols, symbol, config.max_concurrent_positions):
             print(
@@ -156,8 +157,11 @@ def main() -> int:
             existing_exposure_value += pending_buy_exposure_value(open_orders, symbol, price)
             order_usd = clamp_to_exposure_cap_value(existing_exposure_value, order_usd, config.max_symbol_exposure_usd)
     else:
-        # Never sell more than what's actually held — avoids accidentally opening a short.
-        order_usd = min(order_usd, existing_exposure_value)
+        # Never sell more than what's actually held and not already reserved by a still-unfilled
+        # sell order — avoids both accidentally opening a short and re-requesting shares a prior
+        # queued order (e.g. illiquid/halted quote) already holds, which Alpaca rejects with a 403.
+        sellable_value = existing_exposure_value - pending_sell_exposure_value(open_orders, symbol, price)
+        order_usd = min(order_usd, max(0.0, sellable_value))
 
     quantity = round_quantity(order_usd / price, asset.get("fractionable", False))
 
