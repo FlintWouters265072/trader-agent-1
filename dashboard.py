@@ -506,8 +506,16 @@ def build_content(decisions: list[dict], stats: dict, snapshot: dict | None, equ
       </div>
 
       <div class="card g-12">
-        <h2>Decision Log</h2>
-        {render_table(decisions) or '<div class="empty">No decisions logged yet.</div>'}
+        <details id="decision-log-details" class="log-details">
+          <summary>
+            <span class="summary-title">Decision Log</span>
+            <span class="summary-meta">{len(decisions)} decisions</span>
+            <svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </summary>
+          {render_table(decisions) or '<div class="empty">No decisions logged yet.</div>'}
+        </details>
       </div>
     </div>"""
 
@@ -690,6 +698,19 @@ STYLE = """
   }
   .empty code { color: var(--text-secondary); }
 
+  /* Collapsible decision log */
+  .log-details summary {
+    display: flex; align-items: center; gap: 10px;
+    cursor: pointer; list-style: none; user-select: none;
+  }
+  .log-details summary::-webkit-details-marker { display: none; }
+  .summary-title { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
+  .summary-meta { font-size: 12px; color: var(--text-secondary); }
+  .chevron { color: var(--text-secondary); margin-left: auto; transition: transform 0.2s; }
+  .log-details[open] .chevron { transform: rotate(180deg); }
+  .log-details[open] summary { margin-bottom: 14px; }
+  .log-details summary:hover .summary-title { color: var(--accent); }
+
   /* Risk settings form */
   .risk-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 16px; }
   .risk-field { display: flex; flex-direction: column; gap: 6px; }
@@ -731,6 +752,22 @@ function tickClock() {
 }
 tickClock();
 setInterval(tickClock, 1000);
+
+// Keep the decision-log dropdown's open/closed state across the live page's
+// periodic #content swaps (and static-page meta refreshes) via localStorage.
+const LOG_STATE_KEY = 'decisionLogOpen';
+document.addEventListener('toggle', (e) => {
+  if (e.target && e.target.id === 'decision-log-details') {
+    localStorage.setItem(LOG_STATE_KEY, e.target.open ? '1' : '0');
+  }
+}, true);
+function applyLogState() {
+  const el = document.getElementById('decision-log-details');
+  if (el && localStorage.getItem(LOG_STATE_KEY) === '1' && !el.open) el.open = true;
+}
+applyLogState();
+const contentEl = document.getElementById('content');
+if (contentEl) new MutationObserver(applyLogState).observe(contentEl, { childList: true });
 """
 
 
