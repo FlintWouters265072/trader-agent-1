@@ -64,6 +64,16 @@ def main() -> int:
     )
 
     try:
+        clock = alpaca.get_clock()
+    except AlpacaError as e:
+        print(f"Alpaca API error while fetching market clock: {e}", file=sys.stderr)
+        return 1
+
+    if not clock.get("is_open"):
+        print(f"Market is closed (next open: {clock.get('next_open')}) — skipping this cycle, no decision made.")
+        return 0
+
+    try:
         account = alpaca.get_account()
         positions = alpaca.get_positions()
 

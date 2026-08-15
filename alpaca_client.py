@@ -33,6 +33,9 @@ class AlpacaClient:
     def get_account(self) -> dict:
         return self._request(self.base_url, "GET", "/v2/account")
 
+    def get_clock(self) -> dict:
+        return self._request(self.base_url, "GET", "/v2/clock")
+
     def get_positions(self) -> list[dict]:
         return self._request(self.base_url, "GET", "/v2/positions")
 
@@ -52,6 +55,9 @@ class AlpacaClient:
                 self.data_url, "GET", "/v2/stocks/quotes/latest", params={"symbols": symbol}
             )
         return data.get("quotes", {}).get(symbol, {})
+
+    def cancel_order(self, order_id: str) -> None:
+        self._request(self.base_url, "DELETE", f"/v2/orders/{order_id}")
 
     def place_order(self, symbol: str, side: str, qty: float) -> dict:
         body = {
