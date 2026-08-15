@@ -20,11 +20,13 @@ DECISIONS_PATH = "decisions.jsonl"
 EQUITY_PATH = "equity_history.jsonl"
 OUTPUT_PATH = "dashboard.html"
 
-STATUS_GOOD = "#00ff88"
-STATUS_CRITICAL = "#ff2d55"
-STATUS_MUTED = "#5b8a9a"
+ACCENT = "#2196f3"
+STATUS_GOOD = "#4caf50"
+STATUS_CRITICAL = "#ef5350"
+STATUS_WARN = "#ffc107"
+STATUS_MUTED = "#6b7280"
 
-ACTION_COLOR = {"buy": STATUS_GOOD, "sell": STATUS_CRITICAL, "hold": STATUS_MUTED}
+ACTION_COLOR = {"buy": STATUS_GOOD, "sell": STATUS_CRITICAL, "hold": STATUS_WARN}
 
 AMSTERDAM_TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -34,7 +36,7 @@ def format_amsterdam_time(timestamp: str) -> str:
     if not timestamp:
         return ""
     try:
-        dt = datetime.fromisoformat(timestamp)
+        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except ValueError:
         return timestamp
     if dt.tzinfo is None:
@@ -133,12 +135,76 @@ def compute_stats(decisions: list[dict]) -> dict:
     }
 
 
-def stat_tile(label: str, value, dot_color: str | None = None) -> str:
-    dot = f'<span class="dot" style="background:{dot_color}"></span>' if dot_color else ""
+def format_signed(value, currency: str = "") -> str:
+    sign = "+" if value >= 0 else ""
+    text = f"{sign}{value:,.2f}"
+    return f"{text} {currency}".strip()
+
+
+def ring_counter(value, label: str, color: str) -> str:
     return f"""
-    <div class="tile">
-      <div class="tile-label">{dot}{html.escape(label)}</div>
-      <div class="tile-value">{html.escape(str(value))}</div>
+    <div class="ring">
+      <svg viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="20" fill="none" stroke="{color}" stroke-width="3" opacity="0.9" />
+      </svg>
+      <div class="ring-num" style="color:{color}">{html.escape(str(value))}</div>
+      <div class="ring-label">{html.escape(label)}</div>
+    </div>"""
+
+
+def render_decisions_card(stats: dict) -> str:
+    total = stats["total"]
+    executed_pct = (stats["executed"] / total * 100) if total else 0.0
+    # Semicircle gauge: radius 50 → arc length ≈ 157.
+    arc_len = 157.0
+    offset = arc_len * (1 - executed_pct / 100)
+    rings = "".join([
+        ring_counter(stats["buy"], "Buy", STATUS_GOOD),
+        ring_counter(stats["sell"], "Sell", STATUS_CRITICAL),
+        ring_counter(stats["hold"], "Hold", STATUS_WARN),
+        ring_counter(stats["executed"], "Executed", ACCENT),
+        ring_counter(stats["dry_run"], "Dry-run", STATUS_MUTED),
+    ])
+    return f"""
+    <div class="perf-grid">
+      <div class="perf-nums">
+        <div class="perf-big" style="color:{ACCENT}">{total}</div>
+        <div class="perf-sub">decisions logged</div>
+      </div>
+      <div class="gauge-wrap">
+        <svg viewBox="0 0 120 70" class="gauge-svg" role="img" aria-label="Share of decisions executed">
+          <path d="M 10 60 A 50 50 0 0 1 110 60" fill="none" stroke="var(--border)" stroke-width="7" stroke-linecap="round" />
+          <path d="M 10 60 A 50 50 0 0 1 110 60" fill="none" stroke="{ACCENT}" stroke-width="7" stroke-linecap="round"
+                stroke-dasharray="{arc_len:.0f}" stroke-dashoffset="{offset:.1f}" />
+          <text x="60" y="52" class="gauge-pct">{executed_pct:.1f}%</text>
+        </svg>
+        <div class="gauge-caption">executed</div>
+      </div>
+      <div class="rings">{rings}</div>
+    </div>"""
+
+
+def render_account_summary(snapshot: dict | None) -> str:
+    if not snapshot or not snapshot.get("account"):
+        return (
+            '<div class="empty">Live account data unavailable (missing/invalid ALPACA_API_KEY_ID '
+            "or ALPACA_API_SECRET_KEY, or the account request failed).</div>"
+        )
+    account = snapshot["account"]
+    positions = snapshot.get("positions") or []
+    currency = account.get("currency", "USD")
+    unrealized = sum(float(p.get("unrealized_pl", 0) or 0) for p in positions)
+    total_value = float(account.get("portfolio_value", 0) or 0)
+    cash_balance = float(account.get("cash", 0) or 0)
+    pl_class = "pos" if unrealized >= 0 else "neg"
+    return f"""
+    <div class="kv-rows">
+      <div class="kv"><span>Account Balance</span><span class="kv-val pos">${total_value:,.2f}</span></div>
+      <div class="kv"><span>Cash</span><span class="kv-val">${cash_balance:,.2f}</span></div>
+      <div class="kv"><span>Unrealized P&amp;L</span><span class="kv-val {pl_class}">{html.escape(format_signed(unrealized))}</span></div>
+      <div class="kv"><span>Currency</span><span class="kv-val">{html.escape(currency)}</span></div>
+      <div class="kv"><span>Account ID</span><span class="kv-val kv-dim">{html.escape(str(account.get("account_number", "—")))}</span></div>
+      <div class="kv"><span>Open Positions</span><span class="kv-val">{len(positions)}</span></div>
     </div>"""
 
 
@@ -161,7 +227,7 @@ def render_timeline(decisions: list[dict]) -> str:
     t_min, t_max = min(valid), max(valid)
     span = (t_max - t_min).total_seconds() or 1
 
-    width, height, pad = 900, 140, 40
+    width, height, pad = 1200, 110, 40
     plot_w = width - 2 * pad
 
     dots = []
@@ -177,8 +243,8 @@ def render_timeline(decisions: list[dict]) -> str:
         executed = "executed" if d.get("executed") else "dry-run"
         tooltip = html.escape(f"{t.strftime('%Y-%m-%d %H:%M UTC')} · {action.upper()} {symbol} x{qty} ({executed})")
         dots.append(
-            f'<circle cx="{x:.1f}" cy="{height / 2:.1f}" r="6" fill="{color}" '
-            f'stroke="var(--surface-1)" stroke-width="2" class="dot-mark" '
+            f'<circle cx="{x:.1f}" cy="{height / 2:.1f}" r="5" fill="{color}" '
+            f'stroke="var(--card)" stroke-width="2" class="dot-mark" '
             f'data-tooltip="{tooltip}"><title>{tooltip}</title></circle>'
         )
 
@@ -189,15 +255,9 @@ def render_timeline(decisions: list[dict]) -> str:
     <svg viewBox="0 0 {width} {height}" class="timeline-svg" role="img" aria-label="Decision timeline">
       <line x1="{pad}" y1="{height / 2}" x2="{width - pad}" y2="{height / 2}" class="baseline" />
       {"".join(dots)}
-      <text x="{pad}" y="{height - 10}" class="axis-label">{axis_label_start}</text>
-      <text x="{width - pad}" y="{height - 10}" class="axis-label" text-anchor="end">{axis_label_end}</text>
+      <text x="{pad}" y="{height - 8}" class="axis-label">{axis_label_start}</text>
+      <text x="{width - pad}" y="{height - 8}" class="axis-label" text-anchor="end">{axis_label_end}</text>
     </svg>"""
-
-
-def format_signed(value, currency: str = "") -> str:
-    sign = "+" if value >= 0 else ""
-    text = f"{sign}{value:,.2f}"
-    return f"{text} {currency}".strip()
 
 
 def render_pl_chart(history: list[dict]) -> str:
@@ -238,26 +298,37 @@ def render_pl_chart(history: list[dict]) -> str:
     pl_values = [pl for _, pl in paired]
     pl_min, pl_max = min(0, *pl_values), max(0, *pl_values)
     pl_range = (pl_max - pl_min) or 1
-    pl_min -= pl_range * 0.15
-    pl_max += pl_range * 0.15
+    pl_min -= pl_range * 0.12
+    pl_max += pl_range * 0.12
     pl_range = pl_max - pl_min
 
-    width, height, pad = 900, 180, 44
-    plot_w = width - 2 * pad
-    plot_h = height - 2 * pad
+    width, height = 900, 260
+    pad_l, pad_r, pad_t, pad_b = 76, 24, 18, 36
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
 
     def x_for(t):
         frac = (t - t_min).total_seconds() / span
-        return pad + frac * plot_w
+        return pad_l + frac * plot_w
 
     def y_for(pl):
         frac = (pl - pl_min) / pl_range
-        return pad + plot_h - frac * plot_h
+        return pad_t + plot_h - frac * plot_h
+
+    # Horizontal gridlines with dollar labels, Trading Vault style.
+    gridlines = []
+    ticks = 4
+    for i in range(ticks + 1):
+        v = pl_min + (pl_range * i / ticks)
+        y = y_for(v)
+        gridlines.append(
+            f'<line x1="{pad_l}" y1="{y:.1f}" x2="{width - pad_r}" y2="{y:.1f}" class="gridline" />'
+            f'<text x="{pad_l - 10}" y="{y + 4:.1f}" class="axis-label" text-anchor="end">{format_signed(v)}</text>'
+        )
 
     zero_y = y_for(0)
     latest_pl = paired[-1][1]
     latest_currency = history[-1].get("currency", "")
-    line_color = STATUS_GOOD if latest_pl >= 0 else STATUS_CRITICAL
 
     points = [(x_for(t), y_for(pl)) for t, pl in paired]
     polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
@@ -266,71 +337,102 @@ def render_pl_chart(history: list[dict]) -> str:
     for (t, pl), (x, y) in zip(paired, points):
         tooltip = html.escape(f"{t.strftime('%Y-%m-%d %H:%M UTC')} · {format_signed(pl, latest_currency)}")
         dots.append(
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="{line_color}" '
-            f'stroke="var(--surface-1)" stroke-width="2" class="dot-mark" '
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{ACCENT}" '
+            f'stroke="var(--card)" stroke-width="2" class="dot-mark" '
             f'data-tooltip="{tooltip}"><title>{tooltip}</title></circle>'
         )
 
     end_x, end_y = points[-1]
+    start_x = points[0][0]
+    bottom_y = pad_t + plot_h
     end_label = html.escape(format_signed(latest_pl, latest_currency))
-    axis_label_start = html.escape(t_min.strftime("%Y-%m-%d %H:%M"))
-    axis_label_end = html.escape(t_max.strftime("%Y-%m-%d %H:%M"))
+    axis_label_start = html.escape(t_min.strftime("%b %d %H:%M"))
+    axis_label_end = html.escape(t_max.strftime("%b %d %H:%M"))
 
     return f"""
     <svg viewBox="0 0 {width} {height}" class="timeline-svg" role="img" aria-label="Unrealized profit and loss over time">
-      <line x1="{pad}" y1="{zero_y:.1f}" x2="{width - pad}" y2="{zero_y:.1f}" class="baseline" />
       <defs>
         <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="{line_color}" stop-opacity="0.3"/>
-          <stop offset="100%" stop-color="{line_color}" stop-opacity="0.0"/>
+          <stop offset="0%" stop-color="{ACCENT}" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="{ACCENT}" stop-opacity="0.02"/>
         </linearGradient>
       </defs>
-      <polygon points="{polyline_points} {end_x:.1f},{zero_y:.1f} {pad:.1f},{zero_y:.1f}" fill="url(#chartGrad)" />
-      <polyline points="{polyline_points}" fill="none" stroke="{line_color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      {"".join(gridlines)}
+      <line x1="{pad_l}" y1="{zero_y:.1f}" x2="{width - pad_r}" y2="{zero_y:.1f}" class="baseline" />
+      <polygon points="{polyline_points} {end_x:.1f},{bottom_y:.1f} {start_x:.1f},{bottom_y:.1f}" fill="url(#chartGrad)" />
+      <polyline points="{polyline_points}" fill="none" stroke="{ACCENT}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
       {"".join(dots)}
       <text x="{end_x:.1f}" y="{end_y - 12:.1f}" class="axis-label pl-end-label" text-anchor="end">{end_label}</text>
-      <text x="{pad}" y="{height - 10}" class="axis-label">{axis_label_start}</text>
-      <text x="{width - pad}" y="{height - 10}" class="axis-label" text-anchor="end">{axis_label_end}</text>
+      <text x="{pad_l}" y="{height - 8}" class="axis-label">{axis_label_start}</text>
+      <text x="{width - pad_r}" y="{height - 8}" class="axis-label" text-anchor="end">{axis_label_end}</text>
     </svg>"""
 
 
-def render_profit_tracker(snapshot: dict | None, history: list[dict]) -> str:
-    if not snapshot or not snapshot.get("account"):
-        return (
-            '<div class="empty">Live account data unavailable (missing/invalid ALPACA_API_KEY_ID '
-            "or ALPACA_API_SECRET_KEY, or the account request failed) — profit tracking needs a "
-            "working Alpaca connection.</div>"
+def side_pill(side: str) -> str:
+    side = (side or "").lower()
+    cls = "pill-long" if side in ("buy", "long") else "pill-short"
+    return f'<span class="pill {cls}">{html.escape(side.upper() or "—")}</span>'
+
+
+def render_positions(snapshot: dict | None) -> str:
+    if not snapshot:
+        return '<div class="empty">Live account data unavailable (missing/invalid Alpaca API keys, or request failed).</div>'
+
+    positions_data = snapshot.get("positions") or []
+    if not positions_data:
+        return '<div class="empty">No open positions.</div>'
+
+    rows = []
+    for p in positions_data:
+        pl = p.get("unrealized_pl")
+        pl = float(pl) if pl is not None else None
+        pl_html = (
+            f'<div class="trade-pl {"pos" if pl >= 0 else "neg"}">{html.escape(format_signed(pl))}</div>'
+            if pl is not None
+            else '<div class="trade-pl">—</div>'
         )
+        qty = html.escape(str(p.get("qty", "")))
+        entry = html.escape(str(p.get("avg_entry_price", "")))
+        current = html.escape(str(p.get("current_price", "—")))
+        rows.append(f"""
+        <div class="trade-row">
+          <div>
+            <div class="trade-sym">{html.escape(str(p.get("symbol", "")))} {side_pill(p.get("side", ""))}</div>
+            <div class="trade-sub">{qty} @ ${entry}</div>
+          </div>
+          <div class="trade-right">
+            <div class="trade-price">${current}</div>
+            {pl_html}
+          </div>
+        </div>""")
+    return f'<div class="trade-list">{"".join(rows)}</div>'
 
-    account = snapshot["account"]
-    positions = snapshot.get("positions") or []
-    currency = account.get("currency", "USD")
-    unrealized = sum(float(p.get("unrealized_pl", 0) or 0) for p in positions)
-    total_value = float(account.get("portfolio_value", 0) or 0)
-    cash_balance = float(account.get("cash", 0) or 0)
 
-    pl_color = STATUS_GOOD if unrealized >= 0 else STATUS_CRITICAL
-    
-    # Generate SVG Gauge
-    # 270 degree arc for the gauge
-    gauge = f"""
-    <div class="gauge-container">
-      <svg class="gauge-svg" viewBox="0 0 200 200">
-        <path class="gauge-arc-bg" d="M 40 160 A 85 85 0 1 1 160 160" />
-        <path class="gauge-arc-fg" d="M 40 160 A 85 85 0 1 1 160 160" />
-        <g class="gauge-ticks">
-          {"".join(f'<line x1="100" y1="15" x2="100" y2="25" stroke="var(--cyan-dim)" stroke-width="2" transform="rotate({i*15} 100 100)" />' for i in range(24))}
-        </g>
-        <text x="100" y="105" class="gauge-text-value">${total_value:,.0f}</text>
-        <text x="100" y="125" class="gauge-text-label">{currency} BALANCE</text>
-      </svg>
-      <div class="pl-val" style="color: {pl_color}">P&amp;L: {format_signed(unrealized, currency)}</div>
-      <div style="font-size: 12px; color: var(--text-secondary); margin-top: 5px;">CASH: {cash_balance:,.2f} {currency}</div>
-    </div>
-    """
+def render_open_orders(snapshot: dict | None) -> str:
+    if not snapshot:
+        return '<div class="empty">Live account data unavailable — can\'t show open orders.</div>'
 
-    return f'<div class="profit-grid"><div>{gauge}</div><div>{render_pl_chart(history)}</div></div>'
+    orders = snapshot.get("orders") or []
+    if not orders:
+        return '<div class="empty">No open orders.</div>'
 
+    rows = []
+    for o in orders:
+        status = html.escape(str(o.get("status", "")))
+        qty = html.escape(str(o.get("qty", "")))
+        filled = html.escape(str(o.get("filled_qty", "0")))
+        submitted = html.escape(format_amsterdam_time(str(o.get("submitted_at", ""))))
+        rows.append(f"""
+        <div class="trade-row">
+          <div>
+            <div class="trade-sym">{html.escape(str(o.get("symbol", "")))} {side_pill(o.get("side", ""))}</div>
+            <div class="trade-sub">{submitted} · {filled}/{qty} filled</div>
+          </div>
+          <div class="trade-right">
+            <span class="badge badge-dry">{status}</span>
+          </div>
+        </div>""")
+    return f'<div class="trade-list">{"".join(rows)}</div>'
 
 
 def render_table(decisions: list[dict]) -> str:
@@ -353,8 +455,8 @@ def render_table(decisions: list[dict]) -> str:
         rows.append(f"""
         <tr>
           <td class="mono">{html.escape(format_amsterdam_time(d.get("timestamp", "")))}</td>
-          <td><span class="dot" style="background:{color}"></span>{html.escape(action.upper())}</td>
-          <td>{html.escape(dec.get("symbol", ""))}</td>
+          <td><span class="action-cell" style="color:{color}">{html.escape(action.upper())}</span></td>
+          <td class="sym-cell">{html.escape(dec.get("symbol", ""))}</td>
           <td class="mono">{html.escape(qty_display)}</td>
           <td>{executed_badge}</td>
           <td class="rationale">{html.escape(dec.get("rationale", ""))}</td>
@@ -368,400 +470,253 @@ def render_table(decisions: list[dict]) -> str:
     </table>"""
 
 
-def render_positions(snapshot: dict | None) -> str:
-    if not snapshot:
-        return '<div class="empty">Live account data unavailable (missing/invalid Alpaca API keys, or request failed) — showing decision log only.</div>'
-
-    account = snapshot.get("account", {})
-    positions_data = snapshot.get("positions") or []
-
-    tiles = (
-        stat_tile("Account currency", account.get("currency", "—"))
-        + stat_tile("Account ID", account.get("account_number", "—"))
-        + stat_tile("Open positions", len(positions_data))
-    )
-
-    if not positions_data:
-        pos_table = '<div class="empty">No open positions.</div>'
-    else:
-        rows = []
-        for p in positions_data:
-            pl = p.get("unrealized_pl")
-            pl = float(pl) if pl is not None else None
-            pl_cell = (
-                f'<span style="color:{STATUS_GOOD if pl >= 0 else STATUS_CRITICAL}">{format_signed(pl)}</span>'
-                if pl is not None
-                else "—"
-            )
-            rows.append(f"""
-            <tr>
-              <td>{html.escape(str(p.get("symbol", "")))}</td>
-              <td>{html.escape(str(p.get("side", "")))}</td>
-              <td class="mono">{html.escape(str(p.get("qty", "")))}</td>
-              <td class="mono">{html.escape(str(p.get("avg_entry_price", "")))}</td>
-              <td class="mono">{html.escape(str(p.get("current_price", "—")))}</td>
-              <td class="mono">{pl_cell}</td>
-            </tr>""")
-        pos_table = f"""
-        <table class="log-table">
-          <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Open price</th><th>Current price</th><th>P&amp;L</th></tr></thead>
-          <tbody>{"".join(rows)}</tbody>
-        </table>"""
-
-    return f'<div class="tiles">{tiles}</div>{pos_table}'
-
-
-def render_open_orders(snapshot: dict | None) -> str:
-    if not snapshot:
-        return '<div class="empty">Live account data unavailable — can\'t show open orders.</div>'
-
-    orders = snapshot.get("orders") or []
-    if not orders:
-        return '<div class="empty">No open orders.</div>'
-
-    rows = []
-    for o in orders:
-        status = o.get("status", "")
-        rows.append(f"""
-        <tr>
-          <td class="mono">{html.escape(str(o.get("submitted_at", "")))}</td>
-          <td>{html.escape(str(o.get("symbol", "")))}</td>
-          <td>{html.escape(str(o.get("side", "")).upper())}</td>
-          <td class="mono">{html.escape(str(o.get("qty", "")))}</td>
-          <td class="mono">{html.escape(str(o.get("filled_qty", "0")))}</td>
-          <td><span class="badge badge-dry">{html.escape(status)}</span></td>
-        </tr>""")
-    note = (
-        '<div class="empty">Orders sitting here (not yet filled) don\'t count toward the exposure '
-        "caps in <code>risk.py</code>, which only look at settled positions — if several stack up "
-        "while the market is closed, they can all fill at once.</div>"
-    )
-    return f"""
-    <table class="log-table">
-      <thead><tr><th>Submitted (UTC)</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Filled</th><th>Status</th></tr></thead>
-      <tbody>{"".join(rows)}</tbody>
-    </table>{note}"""
-
-
 def build_content(decisions: list[dict], stats: dict, snapshot: dict | None, equity_history: list[dict]) -> str:
-    kpi_tiles = "".join([
-        stat_tile("Total decisions", stats["total"]),
-        stat_tile("Buy", stats["buy"], STATUS_GOOD),
-        stat_tile("Sell", stats["sell"], STATUS_CRITICAL),
-        stat_tile("Hold", stats["hold"], STATUS_MUTED),
-        stat_tile("Executed", stats["executed"]),
-        stat_tile("Dry-run", stats["dry_run"]),
-    ])
-
     return f"""
-    <div class="card">
-      <h2>Summary</h2>
-      <div class="tiles">{kpi_tiles}</div>
-    </div>
-
-    <div class="card">
-      <h2>Profit tracker</h2>
-      {render_profit_tracker(snapshot, equity_history)}
-    </div>
-
-    <div class="card">
-      <h2>Decision timeline</h2>
-      {render_timeline(decisions)}
-      <div class="legend">
-        <span><span class="dot" style="background:{STATUS_GOOD}"></span>Buy</span>
-        <span><span class="dot" style="background:{STATUS_CRITICAL}"></span>Sell</span>
-        <span><span class="dot" style="background:{STATUS_MUTED}"></span>Hold</span>
+    <div class="grid">
+      <div class="card g-8">
+        <h2>Decisions</h2>
+        {render_decisions_card(stats)}
       </div>
-    </div>
 
-    <div class="card">
-      <h2>Live account snapshot</h2>
-      {render_positions(snapshot)}
-    </div>
+      <div class="card g-4">
+        <h2>Account Balance</h2>
+        {render_account_summary(snapshot)}
+      </div>
 
-    <div class="card">
-      <h2>Open orders</h2>
-      {render_open_orders(snapshot)}
-    </div>
+      <div class="card g-8">
+        <h2>Unrealized P&amp;L</h2>
+        {render_pl_chart(equity_history)}
+      </div>
 
-    <div class="card">
-      <h2>Decision log</h2>
-      {render_table(decisions) or '<div class="empty">No decisions logged yet.</div>'}
+      <div class="card g-4">
+        <h2>Open Positions</h2>
+        {render_positions(snapshot)}
+        <h2 class="section-gap">Open Orders</h2>
+        {render_open_orders(snapshot)}
+      </div>
+
+      <div class="card g-12">
+        <h2>Decision Timeline</h2>
+        {render_timeline(decisions)}
+        <div class="legend">
+          <span><span class="dot" style="background:{STATUS_GOOD}"></span>Buy</span>
+          <span><span class="dot" style="background:{STATUS_CRITICAL}"></span>Sell</span>
+          <span><span class="dot" style="background:{STATUS_WARN}"></span>Hold</span>
+        </div>
+      </div>
+
+      <div class="card g-12">
+        <h2>Decision Log</h2>
+        {render_table(decisions) or '<div class="empty">No decisions logged yet.</div>'}
+      </div>
     </div>"""
 
 
 STYLE = """
-  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap');
-
   :root {
-    --void: #0a0e1a;
-    --panel: rgba(13, 21, 37, 0.75);
-    --panel-solid: #0d1525;
-    --cyan: #00d4ff;
-    --cyan-dim: rgba(0, 212, 255, 0.25);
-    --cyan-glow: rgba(0, 212, 255, 0.6);
-    --green: #00ff88;
-    --red: #ff2d55;
-    --muted: #5b8a9a;
-    --text-primary: #e8f4ff;
-    --text-secondary: #7db4cc;
-    --text-muted: #3d6478;
-    --border: rgba(0, 212, 255, 0.2);
-    --gridline: rgba(0, 212, 255, 0.08);
+    --bg: #0a0b0d;
+    --card: #131519;
+    --card-2: #1a1d23;
+    --border: #23262d;
+    --accent: #2196f3;
+    --accent-soft: rgba(33, 150, 243, 0.12);
+    --green: #4caf50;
+    --red: #ef5350;
+    --amber: #ffc107;
+    --muted: #6b7280;
+    --text-primary: #e8eaed;
+    --text-secondary: #9aa0a8;
+    --text-muted: #5c6370;
+    --gridline: #1e2127;
+    /* Legacy aliases kept for the server-rendered page */
+    --surface-1: #131519;
+    --cyan: #2196f3;
+    --cyan-dim: rgba(33, 150, 243, 0.25);
+    --cyan-glow: rgba(33, 150, 243, 0.4);
+    --void: #0a0b0d;
   }
-  
+
   * { box-sizing: border-box; }
-  html, body { background: var(--void); min-height: 100vh; }
+  html, body { background: var(--bg); min-height: 100vh; }
   body {
     margin: 0;
-    position: relative;
-    overflow-x: hidden;
-    font-family: 'Share Tech Mono', monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     color: var(--text-primary);
-    background: radial-gradient(circle at 50% 50%, #0d1525 0%, #0a0e1a 100%);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
   }
 
-  /* Hexagonal grid background */
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    opacity: 0.15;
-    background-image: url("data:image/svg+xml,%3Csvg width='40' height='69.282' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M40 17.32l-20 11.547L0 17.32V0h40v17.32zm0 34.641l-20 11.547-20-11.547V34.641h40v17.32z' fill='none' stroke='%2300d4ff' stroke-width='1' opacity='0.5'/%3E%3C/svg%3E");
-    background-size: 40px 69.28px;
-    mask-image: radial-gradient(ellipse at center, black 10%, transparent 80%);
-    -webkit-mask-image: radial-gradient(ellipse at center, black 10%, transparent 80%);
-  }
-  
-  /* Scan lines */
-  body::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2));
-    background-size: 100% 4px;
-    opacity: 0.3;
-  }
-
-  #particles {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    z-index: 0;
-    pointer-events: none;
-  }
-
-  .viz-root { position: relative; z-index: 1; }
-  .wrap { max-width: 1200px; margin: 0 auto; padding: 40px 24px 80px; }
+  .viz-root { position: relative; }
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 20px 20px 60px; }
 
   header {
     display: flex;
     justify-content: space-between;
-    align-items: flex-end;
-    margin-bottom: 40px;
-    padding-bottom: 20px;
-    border-bottom: 2px solid var(--border);
-    position: relative;
+    align-items: center;
+    margin-bottom: 18px;
+    padding: 14px 4px;
+    border-bottom: 1px solid var(--border);
   }
-  header::after {
-    content: "";
-    position: absolute;
-    bottom: -2px;
-    left: 0;
-    width: 150px;
-    height: 2px;
-    background: var(--cyan);
-    box-shadow: 0 0 10px var(--cyan);
-  }
-
   .hdr-title h1 {
     margin: 0;
-    font-family: 'Orbitron', sans-serif;
-    font-weight: 900;
-    font-size: 32px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
     color: var(--text-primary);
-    text-shadow: 0 0 15px var(--cyan-glow), 0 0 30px var(--cyan-dim);
   }
-  .hdr-sub {
-    font-size: 14px;
-    letter-spacing: 0.3em;
-    text-transform: uppercase;
-    color: var(--cyan);
-    margin-top: 8px;
-    text-shadow: 0 0 5px var(--cyan-dim);
-  }
-  
+  .hdr-sub { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
   .hdr-status { text-align: right; }
   .meta { color: var(--text-secondary); font-size: 12px; }
-  .clock {
-    font-family: 'Orbitron', sans-serif;
-    font-size: 18px;
-    color: var(--cyan);
-    text-shadow: 0 0 10px var(--cyan-glow);
-    margin-top: 8px;
-    letter-spacing: 0.1em;
-  }
+  .clock { font-size: 14px; color: var(--text-secondary); margin-top: 4px; font-variant-numeric: tabular-nums; }
 
   .live-dot {
-    position: relative; display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-    background: var(--green); margin-right: 10px; box-shadow: 0 0 8px var(--green);
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); margin-right: 8px;
   }
-  .live-dot::after {
-    content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 1px solid var(--green);
-    opacity: 0; animation: radarping 2s ease-out infinite;
-  }
-  .live-dot.stale { background: var(--red); box-shadow: 0 0 8px var(--red); }
-  .live-dot.stale::after { border-color: var(--red); }
-  @keyframes radarping { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(2.5); opacity: 0; } }
+  .live-dot.stale { background: var(--red); }
+
+  /* Card grid, Trading Vault style: tight gaps, rounded dark cards */
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+  .g-4 { grid-column: span 4; }
+  .g-8 { grid-column: span 8; }
+  .g-12 { grid-column: span 12; }
+  @media (max-width: 980px) { .g-4, .g-8 { grid-column: span 12; } }
 
   .card {
-    position: relative;
-    padding: 24px 30px;
-    margin-bottom: 30px;
-    background: var(--panel);
+    background: var(--card);
     border: 1px solid var(--border);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    box-shadow: inset 0 0 20px rgba(0, 212, 255, 0.05), 0 10px 30px rgba(0,0,0,0.5);
+    border-radius: 8px;
+    padding: 18px 20px;
+    min-width: 0;
   }
-  /* Dramatic Corner Brackets */
-  .card::before, .card::after {
-    content: ""; position: absolute; width: 20px; height: 20px; border: 2px solid var(--cyan);
-    pointer-events: none; transition: 0.3s;
-  }
-  .card::before { top: -2px; left: -2px; border-right: none; border-bottom: none; box-shadow: -2px -2px 10px var(--cyan-dim); }
-  .card::after { bottom: -2px; right: -2px; border-left: none; border-top: none; box-shadow: 2px 2px 10px var(--cyan-dim); }
-  .card:hover::before { width: 30px; height: 30px; box-shadow: -2px -2px 15px var(--cyan-glow); }
-  .card:hover::after { width: 30px; height: 30px; box-shadow: 2px 2px 15px var(--cyan-glow); }
-  
+  #risk-panel .card { margin-top: 14px; }
+
   .card h2 {
-    font-family: 'Orbitron', sans-serif;
-    font-size: 16px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.2em;
-    color: var(--cyan);
-    margin: 0 0 24px;
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    text-shadow: 0 0 8px var(--cyan-glow);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 16px;
+    letter-spacing: 0.02em;
   }
-  .card h2::after {
-    content: ""; flex: 1; height: 1px;
-    background: linear-gradient(90deg, var(--cyan-glow), transparent);
-  }
+  .section-gap { margin-top: 22px !important; padding-top: 16px; border-top: 1px solid var(--border); }
 
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
-  .tile {
-    background: var(--panel-solid);
-    border: 1px solid var(--border);
-    padding: 16px;
-    position: relative;
-    transition: 0.2s;
-  }
-  .tile:hover {
-    border-color: var(--cyan);
-    box-shadow: 0 0 15px var(--cyan-dim);
-    transform: translateY(-2px);
-  }
-  .tile::before {
-    content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 2px;
-    background: var(--cyan); box-shadow: 0 0 8px var(--cyan);
-  }
-  .tile-label {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em;
-    color: var(--text-secondary); display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
-  }
-  .tile-value {
-    font-family: 'Orbitron', sans-serif; font-size: 28px; font-weight: 700; color: var(--text-primary);
-    text-shadow: 0 0 15px rgba(255,255,255,0.2);
-  }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+  /* Decisions performance card */
+  .perf-grid { display: flex; align-items: center; gap: 34px; flex-wrap: wrap; }
+  .perf-big { font-size: 40px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+  .perf-sub { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+  .gauge-wrap { text-align: center; }
+  .gauge-svg { width: 130px; height: 76px; }
+  .gauge-pct { fill: var(--text-primary); font-size: 17px; font-weight: 600; text-anchor: middle; font-variant-numeric: tabular-nums; }
+  .gauge-caption { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
 
-  /* SVG & Timeline overrides */
+  .rings { display: flex; gap: 18px; flex-wrap: wrap; }
+  .ring { position: relative; width: 52px; text-align: center; }
+  .ring svg { width: 48px; height: 48px; display: block; margin: 0 auto; }
+  .ring-num {
+    position: absolute; top: 13px; left: 0; right: 0;
+    font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;
+  }
+  .ring-label { font-size: 10px; color: var(--text-secondary); margin-top: 5px; }
+
+  /* Account summary key-value rows */
+  .kv-rows { display: flex; flex-direction: column; }
+  .kv {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 9px 0; border-bottom: 1px solid var(--gridline); font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .kv:last-child { border-bottom: none; }
+  .kv-val { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kv-dim { color: var(--text-secondary); font-weight: 400; font-size: 12px; }
+  .pos { color: var(--green) !important; }
+  .neg { color: var(--red) !important; }
+
+  /* Trades list (positions / open orders) */
+  .trade-list { display: flex; flex-direction: column; }
+  .trade-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid var(--gridline);
+  }
+  .trade-row:last-child { border-bottom: none; }
+  .trade-sym { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .trade-sub { font-size: 11px; color: var(--text-secondary); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .trade-right { text-align: right; }
+  .trade-price { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .trade-pl { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+  .pill {
+    font-size: 9px; font-weight: 600; letter-spacing: 0.08em; padding: 2px 7px;
+    border-radius: 3px; text-transform: uppercase;
+  }
+  .pill-long { background: rgba(76, 175, 80, 0.15); color: var(--green); }
+  .pill-short { background: rgba(239, 83, 80, 0.15); color: var(--red); }
+
+  /* SVG charts */
   .timeline-svg { width: 100%; height: auto; overflow: visible; }
-  .baseline { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 6; }
-  .axis-label { fill: var(--text-secondary); font-size: 11px; letter-spacing: 0.05em; }
-  .pl-end-label { fill: var(--cyan); font-size: 14px; font-weight: bold; font-family: 'Orbitron', sans-serif; text-shadow: 0 0 5px var(--cyan-glow); }
-  .dot-mark { cursor: pointer; transition: 0.2s; }
-  .dot-mark:hover { r: 8; filter: drop-shadow(0 0 8px currentColor); stroke: var(--cyan); }
-  
-  .legend { display: flex; gap: 24px; font-size: 12px; color: var(--text-secondary); margin-top: 16px; text-transform: uppercase; letter-spacing: 0.1em; }
-  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .baseline { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 4 5; }
+  .gridline { stroke: var(--gridline); stroke-width: 1; }
+  .axis-label { fill: var(--text-secondary); font-size: 11px; font-family: inherit; }
+  .pl-end-label { fill: var(--accent); font-size: 13px; font-weight: 600; }
+  .dot-mark { cursor: pointer; transition: r 0.15s; }
+  .dot-mark:hover { r: 7; }
+
+  .legend { display: flex; gap: 20px; font-size: 12px; color: var(--text-secondary); margin-top: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 
   /* Tables */
   table.log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .log-table th {
-    text-align: left; color: var(--cyan); font-weight: normal; font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.1em; padding: 12px 16px;
-    border-bottom: 1px solid var(--cyan-glow);
-    background: rgba(0, 212, 255, 0.05);
+    text-align: left; color: var(--text-secondary); font-weight: 500; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em; padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
   }
-  .log-table td { padding: 12px 16px; border-bottom: 1px solid var(--gridline); vertical-align: middle; transition: 0.15s; }
-  .log-table tr:hover td { background: rgba(0, 212, 255, 0.1); text-shadow: 0 0 5px rgba(255,255,255,0.3); }
+  .log-table td { padding: 11px 14px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+  .log-table tr:hover td { background: var(--card-2); }
   .mono { font-variant-numeric: tabular-nums; }
-  .rationale { color: var(--text-secondary); max-width: 400px; line-height: 1.4; }
-  
-  .badge {
-    font-size: 10px; padding: 4px 10px; border-radius: 2px;
-    text-transform: uppercase; letter-spacing: 0.1em; border: 1px solid currentColor;
-  }
-  .badge-executed { background: rgba(0, 255, 136, 0.1); color: var(--green); box-shadow: inset 0 0 5px rgba(0,255,136,0.3); }
-  .badge-dry { background: rgba(91, 138, 154, 0.1); color: var(--muted); box-shadow: inset 0 0 5px rgba(91,138,154,0.3); }
-  
-  .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; border: 1px dashed var(--border); margin: 10px 0; }
+  .rationale { color: var(--text-secondary); max-width: 480px; line-height: 1.45; font-size: 12px; }
+  .action-cell { font-weight: 600; font-size: 12px; letter-spacing: 0.04em; }
+  .sym-cell { font-weight: 600; }
 
-  /* Form & Risk Settings */
-  .risk-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 20px; }
-  .risk-field { display: flex; flex-direction: column; gap: 8px; }
-  .risk-field-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--cyan); display: flex; align-items: center; gap: 10px; }
+  .badge {
+    font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .badge-executed { background: var(--accent-soft); color: var(--accent); }
+  .badge-dry { background: rgba(107, 114, 128, 0.18); color: var(--text-secondary); }
+
+  .empty {
+    color: var(--text-muted); font-size: 13px; padding: 18px 0; text-align: center;
+  }
+  .empty code { color: var(--text-secondary); }
+
+  /* Risk settings form */
+  .risk-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .risk-field { display: flex; flex-direction: column; gap: 6px; }
+  .risk-field-label { font-size: 11px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px; }
   .risk-hint { font-size: 10px; color: var(--text-muted); }
   .risk-form input[type="number"], .risk-form select {
-    background: rgba(0,0,0,0.5); border: 1px solid var(--border); border-radius: 0;
-    color: var(--text-primary); font-family: 'Share Tech Mono', monospace; font-size: 14px;
-    padding: 10px 12px; outline: none; transition: 0.2s;
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-primary); font-family: inherit; font-size: 13px;
+    padding: 9px 11px; outline: none; transition: border-color 0.15s;
   }
-  .risk-form input[type="number"]:focus, .risk-form select:focus { border-color: var(--cyan); box-shadow: 0 0 10px var(--cyan-dim); background: rgba(0,212,255,0.05); }
-  .risk-actions { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
-  .risk-error { color: var(--red); font-size: 13px; margin-bottom: 16px; padding: 12px; border: 1px solid var(--red); background: rgba(255,45,85,0.1); text-shadow: 0 0 5px var(--red); }
-  
-  button {
-    background: transparent; border: 1px solid var(--cyan); color: var(--cyan);
-    font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.15em; padding: 10px 24px; cursor: pointer;
-    transition: 0.2s; position: relative; overflow: hidden;
-  }
-  button:hover {
-    background: var(--cyan); color: var(--void);
-    box-shadow: 0 0 15px var(--cyan-glow);
+  .risk-form input[type="number"]:focus, .risk-form select:focus { border-color: var(--accent); }
+  .risk-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+  .risk-error {
+    color: var(--red); font-size: 13px; margin-bottom: 14px; padding: 10px 14px;
+    border: 1px solid rgba(239, 83, 80, 0.4); border-radius: 6px; background: rgba(239, 83, 80, 0.08);
   }
 
-  /* SVG Gauges & Centerpiece */
-  .gauge-container {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    position: relative; margin: 30px 0; padding: 20px;
+  button {
+    background: var(--accent); border: none; border-radius: 5px; color: #fff;
+    font-family: inherit; font-size: 13px; font-weight: 600;
+    padding: 9px 20px; cursor: pointer; transition: opacity 0.15s;
   }
-  .gauge-svg { width: 300px; height: 300px; filter: drop-shadow(0 0 10px var(--cyan-dim)); }
-  .gauge-arc-bg { fill: none; stroke: var(--border); stroke-width: 10; stroke-linecap: round; }
-  .gauge-arc-fg { fill: none; stroke: var(--cyan); stroke-width: 10; stroke-linecap: round; stroke-dasharray: 600; stroke-dashoffset: 0; animation: dash 2s ease-out forwards; }
-  @keyframes dash { from { stroke-dashoffset: 600; } to { stroke-dashoffset: 150; } }
-  .gauge-ticks { transform-origin: center; animation: spin 60s linear infinite; }
-  @keyframes spin { 100% { transform: rotate(360deg); } }
-  .gauge-text-value { fill: var(--text-primary); font-family: 'Orbitron', sans-serif; font-size: 32px; font-weight: 700; text-anchor: middle; filter: drop-shadow(0 0 5px rgba(255,255,255,0.3)); }
-  .gauge-text-label { fill: var(--text-secondary); font-family: 'Share Tech Mono', monospace; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; text-anchor: middle; }
-  .pl-val { font-family: 'Share Tech Mono', monospace; font-size: 16px; font-weight: bold; margin-top: 15px; }
-  
-  .profit-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 30px; align-items: center; }
-  @media (max-width: 800px) { .profit-grid { grid-template-columns: 1fr; } }
+  button:hover { opacity: 0.85; }
+  button[formaction] {
+    background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
+  }
+  button[formaction]:hover { border-color: var(--text-secondary); color: var(--text-primary); }
 """
 
 CLOCK_SCRIPT = """
@@ -776,58 +731,6 @@ function tickClock() {
 }
 tickClock();
 setInterval(tickClock, 1000);
-
-// Particle system
-const canvas = document.createElement('canvas');
-canvas.id = 'particles';
-document.body.insertBefore(canvas, document.body.firstChild);
-const ctx = canvas.getContext('2d');
-let w, h, particles;
-
-function initParticles() {
-  w = canvas.width = window.innerWidth;
-  h = canvas.height = window.innerHeight;
-  particles = [];
-  for(let i=0; i<60; i++) {
-    particles.push({
-      x: Math.random()*w, y: Math.random()*h,
-      vx: (Math.random()-0.5)*0.5, vy: (Math.random()-0.5)*0.5,
-      r: Math.random()*1.5 + 0.5
-    });
-  }
-}
-initParticles();
-window.addEventListener('resize', initParticles);
-
-function drawParticles() {
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = 'rgba(0, 212, 255, 0.4)';
-  ctx.strokeStyle = 'rgba(0, 212, 255, 0.1)';
-  
-  for(let i=0; i<particles.length; i++) {
-    let p = particles[i];
-    p.x += p.vx; p.y += p.vy;
-    if(p.x < 0 || p.x > w) p.vx *= -1;
-    if(p.y < 0 || p.y > h) p.vy *= -1;
-    
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
-    ctx.fill();
-    
-    for(let j=i+1; j<particles.length; j++) {
-      let p2 = particles[j];
-      let dist = Math.hypot(p.x-p2.x, p.y-p2.y);
-      if(dist < 100) {
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.stroke();
-      }
-    }
-  }
-  requestAnimationFrame(drawParticles);
-}
-drawParticles();
 """
 
 
