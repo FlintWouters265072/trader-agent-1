@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 
 import anthropic
@@ -97,7 +99,21 @@ def summarize_positions(positions: list[dict]) -> list[dict]:
     return summaries
 
 
-def build_prompt(account: dict, positions: list[dict], quotes: dict[str, dict]) -> str:
+def summarize_open_orders(open_orders: list[dict]) -> list[dict]:
+    summaries = []
+    for o in open_orders:
+        summaries.append({
+            "symbol": o.get("symbol", ""),
+            "side": o.get("side", ""),
+            "qty": float(o.get("qty", 0) or 0),
+            "filled_qty": float(o.get("filled_qty", 0) or 0),
+            "status": o.get("status", ""),
+            "submitted_at": o.get("submitted_at", ""),
+        })
+    return summaries
+
+
+def build_prompt(account: dict, positions: list[dict], quotes: dict[str, dict], open_orders: list[dict] | None = None) -> str:
     lines = ["## Account", json.dumps(account, indent=2)]
     lines.append("\n## Open Positions (with live quotes below — evaluate whether each is still worth holding)")
     position_summaries = summarize_positions(positions)
@@ -105,6 +121,15 @@ def build_prompt(account: dict, positions: list[dict], quotes: dict[str, dict]) 
         lines.append(json.dumps(position_summaries, indent=2))
     else:
         lines.append("None.")
+
+    order_summaries = summarize_open_orders(open_orders or [])
+    if order_summaries:
+        lines.append(
+            "\n## Pending Orders (submitted but NOT yet filled — shares in a pending sell are already "
+            "reserved and cannot be sold again; a pending buy already counts toward exposure. Do not "
+            "propose an action this pending order already covers.)"
+        )
+        lines.append(json.dumps(order_summaries, indent=2))
 
     if quotes:
         lines.append("\n## Live Quotes For Open Positions")

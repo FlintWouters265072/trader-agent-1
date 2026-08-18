@@ -90,7 +90,13 @@ def main() -> int:
         print(f"Alpaca API error while fetching data: {e}", file=sys.stderr)
         return 1
 
-    prompt = build_prompt(account, positions, quotes)
+    try:
+        open_orders = alpaca.get_orders(status="open")
+    except AlpacaError as e:
+        print(f"Warning: could not fetch open orders, exposure/sell sizing may be off: {e}", file=sys.stderr)
+        open_orders = []
+
+    prompt = build_prompt(account, positions, quotes, open_orders)
     decision = get_decision(prompt, config.anthropic_api_key, config.risk_appetite)
 
     entry = {
@@ -147,12 +153,6 @@ def main() -> int:
     order_usd = clamp_order_value(requested_usd, config.max_order_value_usd)
     position_summaries = summarize_positions(positions)
     existing_exposure_value = total_exposure_value(position_summaries, symbol)
-
-    try:
-        open_orders = alpaca.get_orders(status="open")
-    except AlpacaError as e:
-        print(f"Warning: could not fetch open orders, exposure/sell sizing may be off: {e}", file=sys.stderr)
-        open_orders = []
 
     if decision["action"] == "buy":
         open_symbols = open_symbol_set(position_summaries, open_orders)
