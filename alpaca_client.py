@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import requests
 
 
@@ -43,7 +45,7 @@ class AlpacaClient:
         return self._request(self.base_url, "GET", "/v2/orders", params={"status": status, "limit": 50})
 
     def get_asset(self, symbol: str) -> dict:
-        return self._request(self.base_url, "GET", f"/v2/assets/{symbol}")
+        return self._request(self.base_url, "GET", f"/v2/assets/{quote(symbol, safe='')}")
 
     def get_quote(self, symbol: str) -> dict:
         if is_crypto(symbol):
@@ -68,4 +70,3 @@ class AlpacaClient:
             "time_in_force": "gtc" if is_crypto(symbol) else "day",
         }
         return self._request(self.base_url, "POST", "/v2/orders", json=body)
-heloloeoe little bro
