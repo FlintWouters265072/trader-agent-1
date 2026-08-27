@@ -68,3 +68,4 @@ class AlpacaClient:
             "time_in_force": "gtc" if is_crypto(symbol) else "day",
         }
         return self._request(self.base_url, "POST", "/v2/orders", json=body)
+heloloeoe little bro
