@@ -113,7 +113,14 @@ def summarize_open_orders(open_orders: list[dict]) -> list[dict]:
     return summaries
 
 
-def build_prompt(account: dict, positions: list[dict], quotes: dict[str, dict], open_orders: list[dict] | None = None) -> str:
+def build_prompt(
+    account: dict,
+    positions: list[dict],
+    quotes: dict[str, dict],
+    open_orders: list[dict] | None = None,
+    open_position_count: int | None = None,
+    max_concurrent_positions: int | None = None,
+) -> str:
     lines = ["## Account", json.dumps(account, indent=2)]
     lines.append("\n## Open Positions (with live quotes below — evaluate whether each is still worth holding)")
     position_summaries = summarize_positions(positions)
@@ -121,6 +128,21 @@ def build_prompt(account: dict, positions: list[dict], quotes: dict[str, dict], 
         lines.append(json.dumps(position_summaries, indent=2))
     else:
         lines.append("None.")
+
+    if open_position_count is not None and max_concurrent_positions is not None:
+        if open_position_count >= max_concurrent_positions:
+            lines.append(
+                f"\n## Position Capacity: {open_position_count}/{max_concurrent_positions} — FULL. "
+                "Opening any symbol not already held or on order above will be rejected outright — the "
+                "order gets clamped to zero and nothing happens. Do NOT propose a new symbol. Either add "
+                "to / trim an existing position, sell one to free a slot for something you'd rather hold, "
+                "or hold."
+            )
+        else:
+            lines.append(
+                f"\n## Position Capacity: {open_position_count}/{max_concurrent_positions} — "
+                f"{max_concurrent_positions - open_position_count} slot(s) free for a new symbol."
+            )
 
     order_summaries = summarize_open_orders(open_orders or [])
     if order_summaries:

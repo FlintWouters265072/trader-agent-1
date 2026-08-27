@@ -96,7 +96,13 @@ def main() -> int:
         print(f"Warning: could not fetch open orders, exposure/sell sizing may be off: {e}", file=sys.stderr)
         open_orders = []
 
-    prompt = build_prompt(account, positions, quotes, open_orders)
+    position_summaries = summarize_positions(positions)
+    open_symbols = open_symbol_set(position_summaries, open_orders)
+
+    prompt = build_prompt(
+        account, positions, quotes, open_orders,
+        open_position_count=len(open_symbols), max_concurrent_positions=config.max_concurrent_positions,
+    )
     decision = get_decision(prompt, config.anthropic_api_key, config.risk_appetite)
 
     entry = {
@@ -151,11 +157,9 @@ def main() -> int:
 
     requested_usd = decision["amount_usd"]
     order_usd = clamp_order_value(requested_usd, config.max_order_value_usd)
-    position_summaries = summarize_positions(positions)
     existing_exposure_value = total_exposure_value(position_summaries, symbol)
 
     if decision["action"] == "buy":
-        open_symbols = open_symbol_set(position_summaries, open_orders)
         if blocks_new_symbol(open_symbols, symbol, config.max_concurrent_positions):
             print(
                 f"{symbol} would be a new position, but {len(open_symbols)}/{config.max_concurrent_positions} "
