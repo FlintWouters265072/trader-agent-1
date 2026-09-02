@@ -210,9 +210,11 @@ this, check in order:
   (`MAX_CONCURRENT_POSITIONS`) — all four editable live from the dashboard (§5). Still no daily-loss
   limit, no portfolio-level (all-positions-combined) exposure cap, and no separate pause/kill switch
   beyond `EXECUTE=false`. Extend before trusting it with anything beyond small paper trades.
-- **Market hours.** Alpaca's paper trading follows real US market hours for stocks (crypto trades
-  24/7) — stock quotes and orders outside regular trading hours may be stale or rejected. `run.py`
-  doesn't currently check market status before deciding.
+- **Market hours — the whole cycle is skipped while the US stock market is closed.** `run.py`
+  checks Alpaca's clock first and returns immediately if the market is shut, before spending an
+  LLM call. The tradeoff is deliberate but worth knowing: **crypto trades 24/7, and this skip
+  covers it too**, so held crypto is not managed overnight or at weekends. Trading resumes by
+  itself at the next open.
 - **No live-quote grounding for brand-new symbols.** The model picks a new symbol from its own
   knowledge (no quote is fed to it beforehand for anything it doesn't already hold) — a live quote
   is only fetched afterward, to validate tradability and size the order. It won't invent an

@@ -1,6 +1,10 @@
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+# The deployed runtime is the system interpreter used by automate.sh / the launchd job
+# (/usr/bin/python3 == 3.9 on macOS), not the 3.11 in the Dockerfile. Keep this pinned to the
+# OLDEST interpreter that runs this code, or ruff's UP rules will happily rewrite the source
+# into 3.10/3.11-only syntax (datetime.UTC, zip(strict=), X | Y) that ImportErrors on startup.
+target-version = "py39"
 extend-exclude = ["scratch.py", "fix_polyline.py"]
 
 [tool.ruff.lint]

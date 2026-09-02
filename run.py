@@ -1,11 +1,11 @@
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from alpaca_client import AlpacaClient, AlpacaError, normalize_crypto_symbol
 from config import Config, ConfigError
-from decision import build_prompt, get_decision, summarize_positions
+from decision import DecisionError, build_prompt, get_decision, summarize_positions
 from risk import (
     blocks_new_symbol,
     clamp_order_value,
@@ -107,10 +107,14 @@ def main() -> int:
         account, positions, quotes, open_orders,
         open_position_count=len(open_symbols), max_concurrent_positions=config.max_concurrent_positions,
     )
-    decision = get_decision(prompt, config.anthropic_api_key, config.risk_appetite)
+    try:
+        decision = get_decision(prompt, config.anthropic_api_key, config.risk_appetite)
+    except DecisionError as e:
+        print(f"No decision this cycle: {e}", file=sys.stderr)
+        return 0
 
     entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "decision": decision,
         "executed": False,
     }
@@ -141,7 +145,10 @@ def main() -> int:
     # order placement) agrees on one symbol, even on the rare cycle where the model echoes back
     # the raw no-slash form a held position was originally shown as before positions/orders were
     # normalized on fetch.
-    symbol = asset.get("symbol", symbol)
+    symbol = asset.get("symbol") or symbol
+    # Log the canonical form too, so decisions.jsonl and the dashboard name the same symbol the
+    # order was actually placed for, instead of whichever variant the model happened to type.
+    decision["symbol"] = symbol
 
     if not asset.get("tradable"):
         print(f"{symbol} is not currently tradable on Alpaca — refusing to trade.", file=sys.stderr)
@@ -170,6 +177,8 @@ def main() -> int:
     order_usd = clamp_order_value(requested_usd, config.max_order_value_usd)
     existing_exposure_value = total_exposure_value(position_summaries, symbol)
 
+    fractionable = asset.get("fractionable", False)
+
     if decision["action"] == "buy":
         if blocks_new_symbol(open_symbols, symbol, config.max_concurrent_positions):
             print(
@@ -182,17 +191,23 @@ def main() -> int:
         else:
             existing_exposure_value += pending_buy_exposure_value(open_orders, symbol, price)
             order_usd = clamp_to_exposure_cap_value(existing_exposure_value, order_usd, config.max_symbol_exposure_usd)
+        quantity = round_quantity(order_usd / price, fractionable)
     else:
         # Never sell more than what's actually held and not already reserved by a still-unfilled
         # sell order — avoids both accidentally opening a short and re-requesting shares a prior
-        # queued order (e.g. illiquid/halted quote) already holds, which Alpaca rejects with a
-        # 403. Netted in share units, then priced once at the live quote — netting in dollars
-        # instead would price the held side and the pending-order side differently and recover
-        # the wrong quantity whenever the position's cached price and a fresh quote diverge.
+        # queued order (e.g. illiquid/halted quote) already holds, which Alpaca rejects with a 403.
         sellable_qty = max(0.0, held_quantity(position_summaries, symbol) - pending_sell_quantity(open_orders, symbol))
-        order_usd = min(order_usd, sellable_qty * price)
-
-    quantity = round_quantity(order_usd / price, asset.get("fractionable", False))
+        # Compare in share units rather than dollars: clamping dollars and dividing back out by
+        # price sends the quantity through a float round-trip that does not reproduce it exactly,
+        # landing either a hair above the held quantity (Alpaca rejects the whole order with a 403)
+        # or a whole share below it (7 shares of a $19.99 stock sells 6, stranding the last one).
+        if order_usd / price >= sellable_qty:
+            # Closing the position: send exactly what's held. Rounding to the venue's precision
+            # here would strand sub-precision dust that no later cycle can sell (it rounds to
+            # zero), while still occupying one of the MAX_CONCURRENT_POSITIONS slots forever.
+            quantity = sellable_qty
+        else:
+            quantity = round_quantity(order_usd / price, fractionable)
 
     if requested_usd != round(quantity * price, 2):
         entry["model_requested_usd"] = requested_usd

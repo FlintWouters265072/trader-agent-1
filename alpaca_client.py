@@ -13,6 +13,13 @@ def is_crypto(symbol: str) -> bool:
     return "/" in symbol
 
 
+# Quote currencies Alpaca's US crypto venue prices pairs in, longest-first so the suffix match is
+# unambiguous: 'BTCUSDC' must split as BTC/USDC, not BTC + a leftover 'C'. Roughly half of Alpaca's
+# active crypto assets are quoted in something other than plain USD (USDC, USDT, and a handful of
+# BTC pairs), and every one of them comes back from positions/orders with the '/' stripped.
+CRYPTO_QUOTE_CURRENCIES = ("USDC", "USDT", "USD", "BTC")
+
+
 def normalize_crypto_symbol(symbol: str, asset_class: str | None) -> str:
     """Alpaca's positions/orders endpoints return crypto symbols without the '/' (e.g. 'XRPUSD'),
     but quotes, order placement, and our own is_crypto() all expect it ('XRP/USD') — a position
@@ -21,8 +28,12 @@ def normalize_crypto_symbol(symbol: str, asset_class: str | None) -> str:
     it once, right after fetching from Alpaca, using the asset_class Alpaca already gives us —
     so the prompt shown to the model, exposure/quantity math, and order placement all agree on
     one symbol, and the model naturally echoes back a form that actually works."""
-    if asset_class == "crypto" and "/" not in symbol and symbol.endswith("USD"):
-        return f"{symbol[:-3]}/USD"
+    if asset_class != "crypto" or "/" in symbol:
+        return symbol
+    for quote_ccy in CRYPTO_QUOTE_CURRENCIES:
+        base = symbol[: -len(quote_ccy)]
+        if base and symbol.endswith(quote_ccy):
+            return f"{base}/{quote_ccy}"
     return symbol
 
 

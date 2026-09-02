@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import html
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from flask import Flask, jsonify, redirect, request, url_for
 
@@ -37,6 +38,25 @@ EQUITY_SNAPSHOT_MIN_GAP = timedelta(minutes=5)
 app = Flask(__name__)
 
 
+@app.before_request
+def block_cross_site_writes():
+    """Reject state-changing requests coming from another site's page.
+
+    The dashboard has no login — it's protected only by binding to loopback (and, in the Docker
+    deployment, by being reachable solely through an SSH tunnel). That keeps the network out, but
+    not the browser: a form POST is not subject to CORS, so any page open in the same browser can
+    silently submit to http://127.0.0.1:<port>/risk-settings and rewrite the caps the next trading
+    cycle enforces. Browsers attach Origin to those posts, so require it to match this server.
+    A missing Origin means a non-browser client (curl, a script), which has no ambient session to
+    abuse and is left alone."""
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    origin = request.headers.get("Origin")
+    if origin is not None and urlparse(origin).netloc != request.host:
+        return "Cross-site request blocked.", 403
+    return None
+
+
 def maybe_record_equity_snapshot(snapshot: dict | None) -> None:
     """Append an equity snapshot at most once per EQUITY_SNAPSHOT_MIN_GAP, so
     polling every few seconds doesn't flood equity_history.jsonl with a line
@@ -48,7 +68,7 @@ def maybe_record_equity_snapshot(snapshot: dict | None) -> None:
         last_ts = history[-1].get("timestamp", "")
         try:
             last_t = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
-            if datetime.now(UTC) - last_t < EQUITY_SNAPSHOT_MIN_GAP:
+            if datetime.now(timezone.utc) - last_t < EQUITY_SNAPSHOT_MIN_GAP:
                 return
         except ValueError:
             pass
@@ -64,7 +84,7 @@ def render_payload() -> dict:
     content = build_content(decisions, stats, snapshot, equity_history)
     return {
         "html": content,
-        "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "live": snapshot is not None,
     }
 

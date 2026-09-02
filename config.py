@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -91,7 +91,7 @@ def validate_risk_setting(key: str, raw_value: str):
 
 def save_risk_overrides(values: dict) -> None:
     """Atomically overwrite risk_overrides.json with exactly these (always all four) values."""
-    payload = {**values, "updated_at": datetime.now(UTC).isoformat()}
+    payload = {**values, "updated_at": datetime.now(timezone.utc).isoformat()}
     tmp_path = RISK_OVERRIDES_PATH + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump(payload, f, indent=2)

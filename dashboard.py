@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -40,7 +40,7 @@ def format_amsterdam_time(timestamp: str) -> str:
     except ValueError:
         return timestamp
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
+        dt = dt.replace(tzinfo=timezone.utc)
     local = dt.astimezone(AMSTERDAM_TZ)
     return f"{local.day}-{local.month}-{local.year} {local.strftime('%H:%M')}"
 
@@ -70,7 +70,7 @@ def fetch_live_snapshot() -> dict | None:
     base_url = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
     data_url = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets").rstrip("/")
     try:
-        from alpaca_client import AlpacaClient
+        from alpaca_client import AlpacaClient, normalize_crypto_symbol
 
         client = AlpacaClient(base_url, data_url, key_id, secret_key)
         account = client.get_account()
@@ -79,6 +79,10 @@ def fetch_live_snapshot() -> dict | None:
             orders = client.get_orders(status="open")
         except Exception:
             orders = []
+        # Same normalization run.py applies on fetch, so the dashboard names a held crypto position
+        # 'XRP/USD' like the decision log does, instead of the raw 'XRPUSD' Alpaca returns.
+        for row in (*positions, *orders):
+            row["symbol"] = normalize_crypto_symbol(row.get("symbol", ""), row.get("asset_class"))
         return {"account": account, "positions": positions, "orders": orders}
     except Exception:
         return None
@@ -91,7 +95,7 @@ def record_equity_snapshot(snapshot: dict | None) -> None:
     positions = snapshot.get("positions") or []
     unrealized_pl = sum(float(p.get("unrealized_pl", 0) or 0) for p in positions)
     entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "total_value": float(account.get("portfolio_value", 0) or 0),
         "unrealized_pl": unrealized_pl,
         "cash_balance": float(account.get("cash", 0) or 0),
@@ -231,7 +235,9 @@ def render_timeline(decisions: list[dict]) -> str:
     plot_w = width - 2 * pad
 
     dots = []
-    for d, t in zip(decisions, times, strict=True):
+    # No strict=: `times` is built one entry per decision just above, so the lengths always match,
+    # and the keyword is a 3.10+ feature the deployed 3.9 interpreter rejects with a TypeError.
+    for d, t in zip(decisions, times):
         if t is None:
             continue
         frac = (t - t_min).total_seconds() / span if span else 0.5
@@ -334,7 +340,9 @@ def render_pl_chart(history: list[dict]) -> str:
     polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
 
     dots = []
-    for (t, pl), (x, y) in zip(paired, points, strict=True):
+    # No strict=: `points` is a comprehension over `paired`, so the lengths always match, and the
+    # keyword is a 3.10+ feature the deployed 3.9 interpreter rejects with a TypeError.
+    for (t, pl), (x, y) in zip(paired, points):
         tooltip = html.escape(f"{t.strftime('%Y-%m-%d %H:%M UTC')} · {format_signed(pl, latest_currency)}")
         dots.append(
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{ACCENT}" '
@@ -772,7 +780,7 @@ if (contentEl) new MutationObserver(applyLogState).observe(contentEl, { childLis
 
 
 def build_html(decisions: list[dict], stats: dict, snapshot: dict | None, equity_history: list[dict]) -> str:
-    generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     content = build_content(decisions, stats, snapshot, equity_history)
 
     return f"""<!doctype html>

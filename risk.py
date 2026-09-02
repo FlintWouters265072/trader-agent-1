@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 
 def clamp_order_value(requested_usd: float, max_order_value_usd: float) -> float:
     return max(0.0, min(requested_usd, max_order_value_usd))
@@ -62,11 +64,16 @@ def clamp_to_exposure_cap_value(existing_exposure_value: float, requested_usd: f
 
 
 def round_quantity(qty: float, fractionable: bool) -> float:
+    """Round *down* to the venue's precision, never up. Rounding up is not a harmless
+    half-cent: on a sell it can land a hair above the quantity actually held, and Alpaca
+    rejects the entire order with a 403 rather than trimming it (round(x, 6) rounds up for
+    roughly half of all crypto quantities, which carry more than six decimals). On a buy,
+    flooring just means spending marginally under the cap."""
     if qty <= 0:
         return 0.0
     if fractionable:
-        return round(qty, 6)
-    return float(int(qty))
+        return math.floor(qty * 1_000_000) / 1_000_000
+    return float(math.floor(qty))
 
 
 def open_symbol_set(position_summaries: list[dict], open_orders: list[dict]) -> set[str]:

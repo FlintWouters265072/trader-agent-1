@@ -168,14 +168,37 @@ def build_prompt(
     return "\n".join(lines)
 
 
+class DecisionError(RuntimeError):
+    """The model produced no usable decision this cycle. Always transient from the caller's
+    point of view — the next cycle re-asks from scratch — so run.py skips the cycle rather
+    than crashing the container with a traceback."""
+
+
 def get_decision(prompt: str, api_key: str, risk_appetite: str = "medium") -> dict:
     client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        system=build_system_prompt(risk_appetite),
-        messages=[{"role": "user", "content": prompt}],
-        output_config={"format": {"type": "json_schema", "schema": DECISION_SCHEMA}},
-    )
-    text = next(block.text for block in response.content if block.type == "text")
-    return json.loads(text)
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=build_system_prompt(risk_appetite),
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"format": {"type": "json_schema", "schema": DECISION_SCHEMA}},
+        )
+    except anthropic.APIError as e:
+        # Overload (529), rate limits, and connection drops are all routine on a loop that
+        # runs every 15 minutes forever; the SDK already retried internally before raising.
+        raise DecisionError(f"Anthropic API error: {e}") from e
+
+    if response.stop_reason == "refusal":
+        raise DecisionError("model declined to answer (stop_reason=refusal)")
+
+    text = next((block.text for block in response.content if block.type == "text"), None)
+    if text is None:
+        raise DecisionError(f"no text block in response (stop_reason={response.stop_reason})")
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        # Schema-constrained output still gets cut off mid-object if it hits max_tokens.
+        hint = " — response hit max_tokens" if response.stop_reason == "max_tokens" else ""
+        raise DecisionError(f"model returned unparseable JSON{hint}: {e}") from e
