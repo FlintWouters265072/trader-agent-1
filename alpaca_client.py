@@ -13,6 +13,19 @@ def is_crypto(symbol: str) -> bool:
     return "/" in symbol
 
 
+def normalize_crypto_symbol(symbol: str, asset_class: str | None) -> str:
+    """Alpaca's positions/orders endpoints return crypto symbols without the '/' (e.g. 'XRPUSD'),
+    but quotes, order placement, and our own is_crypto() all expect it ('XRP/USD') — a position
+    held via a no-slash symbol silently fails every quote lookup (routed to the stock endpoint,
+    which finds nothing), so a sell of it is permanently rejected as 'no usable live price'. Fix
+    it once, right after fetching from Alpaca, using the asset_class Alpaca already gives us —
+    so the prompt shown to the model, exposure/quantity math, and order placement all agree on
+    one symbol, and the model naturally echoes back a form that actually works."""
+    if asset_class == "crypto" and "/" not in symbol and symbol.endswith("USD"):
+        return f"{symbol[:-3]}/USD"
+    return symbol
+
+
 class AlpacaClient:
     def __init__(self, base_url: str, data_url: str, api_key_id: str, api_secret_key: str):
         self.base_url = base_url

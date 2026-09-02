@@ -1,9 +1,9 @@
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from alpaca_client import AlpacaClient, AlpacaError
+from alpaca_client import AlpacaClient, AlpacaError, normalize_crypto_symbol
 from config import Config, ConfigError
 from decision import build_prompt, get_decision, summarize_positions
 from risk import (
@@ -76,6 +76,8 @@ def main() -> int:
     try:
         account = alpaca.get_account()
         positions = alpaca.get_positions()
+        for p in positions:
+            p["symbol"] = normalize_crypto_symbol(p.get("symbol", ""), p.get("asset_class"))
 
         quotes = {}
         for p in positions:
@@ -92,6 +94,8 @@ def main() -> int:
 
     try:
         open_orders = alpaca.get_orders(status="open")
+        for o in open_orders:
+            o["symbol"] = normalize_crypto_symbol(o.get("symbol", ""), o.get("asset_class"))
     except AlpacaError as e:
         print(f"Warning: could not fetch open orders, exposure/sell sizing may be off: {e}", file=sys.stderr)
         open_orders = []
@@ -106,7 +110,7 @@ def main() -> int:
     decision = get_decision(prompt, config.anthropic_api_key, config.risk_appetite)
 
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "decision": decision,
         "executed": False,
     }
@@ -131,6 +135,13 @@ def main() -> int:
         entry["reject_reason"] = "symbol_not_recognized"
         log_entry(entry)
         return 1
+
+    # Alpaca's asset lookup accepts a crypto symbol with or without the '/' and always answers
+    # with the canonical (slashed) form — adopt it so every lookup below (quotes, exposure math,
+    # order placement) agrees on one symbol, even on the rare cycle where the model echoes back
+    # the raw no-slash form a held position was originally shown as before positions/orders were
+    # normalized on fetch.
+    symbol = asset.get("symbol", symbol)
 
     if not asset.get("tradable"):
         print(f"{symbol} is not currently tradable on Alpaca — refusing to trade.", file=sys.stderr)

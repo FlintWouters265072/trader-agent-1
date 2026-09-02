@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -40,7 +40,7 @@ def format_amsterdam_time(timestamp: str) -> str:
     except ValueError:
         return timestamp
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     local = dt.astimezone(AMSTERDAM_TZ)
     return f"{local.day}-{local.month}-{local.year} {local.strftime('%H:%M')}"
 
@@ -91,7 +91,7 @@ def record_equity_snapshot(snapshot: dict | None) -> None:
     positions = snapshot.get("positions") or []
     unrealized_pl = sum(float(p.get("unrealized_pl", 0) or 0) for p in positions)
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "total_value": float(account.get("portfolio_value", 0) or 0),
         "unrealized_pl": unrealized_pl,
         "cash_balance": float(account.get("cash", 0) or 0),
@@ -231,7 +231,7 @@ def render_timeline(decisions: list[dict]) -> str:
     plot_w = width - 2 * pad
 
     dots = []
-    for d, t in zip(decisions, times):
+    for d, t in zip(decisions, times, strict=True):
         if t is None:
             continue
         frac = (t - t_min).total_seconds() / span if span else 0.5
@@ -334,7 +334,7 @@ def render_pl_chart(history: list[dict]) -> str:
     polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
 
     dots = []
-    for (t, pl), (x, y) in zip(paired, points):
+    for (t, pl), (x, y) in zip(paired, points, strict=True):
         tooltip = html.escape(f"{t.strftime('%Y-%m-%d %H:%M UTC')} · {format_signed(pl, latest_currency)}")
         dots.append(
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{ACCENT}" '
@@ -772,7 +772,7 @@ if (contentEl) new MutationObserver(applyLogState).observe(contentEl, { childLis
 
 
 def build_html(decisions: list[dict], stats: dict, snapshot: dict | None, equity_history: list[dict]) -> str:
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     content = build_content(decisions, stats, snapshot, equity_history)
 
     return f"""<!doctype html>

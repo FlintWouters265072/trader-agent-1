@@ -16,3 +16,4 @@ automation.log
 dashboard_server.log
 launchd_stdout.log
 launchd_stderr.log
+dashboard_tunnel.log

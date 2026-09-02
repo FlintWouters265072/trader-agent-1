@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import html
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from flask import Flask, jsonify, redirect, request, url_for
 
@@ -21,8 +21,8 @@ from config import (
     validate_risk_setting,
 )
 from dashboard import (
-    STYLE,
     CLOCK_SCRIPT,
+    STYLE,
     build_content,
     compute_stats,
     fetch_live_snapshot,
@@ -48,7 +48,7 @@ def maybe_record_equity_snapshot(snapshot: dict | None) -> None:
         last_ts = history[-1].get("timestamp", "")
         try:
             last_t = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - last_t < EQUITY_SNAPSHOT_MIN_GAP:
+            if datetime.now(UTC) - last_t < EQUITY_SNAPSHOT_MIN_GAP:
                 return
         except ValueError:
             pass
@@ -64,7 +64,7 @@ def render_payload() -> dict:
     content = build_content(decisions, stats, snapshot, equity_history)
     return {
         "html": content,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "live": snapshot is not None,
     }
 
