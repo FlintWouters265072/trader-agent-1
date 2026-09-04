@@ -13,6 +13,7 @@ venv/
 model.joblib
 
 # Runtime output
+backtest_equity.csv
 decisions.jsonl
 dashboard.html
 equity_history.jsonl
