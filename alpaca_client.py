@@ -82,6 +82,25 @@ class AlpacaClient:
             )
         return data.get("quotes", {}).get(symbol, {})
 
+    def get_bars(self, symbol: str, timeframe: str, start: str, limit_pages: int = 50) -> list[dict]:
+        """Historical OHLCV bars, oldest first, auto-paginated (Alpaca caps each response at
+        10,000 bars regardless of the requested limit). `start` is an ISO date/datetime string.
+        `limit_pages` bounds worst-case requests if a symbol has an unexpectedly long history."""
+        base = self.data_url
+        path = "/v1beta3/crypto/us/bars" if is_crypto(symbol) else "/v2/stocks/bars"
+        params = {"symbols": symbol, "timeframe": timeframe, "start": start, "limit": 10000}
+        if not is_crypto(symbol):
+            params["adjustment"] = "raw"
+        bars: list[dict] = []
+        for _ in range(limit_pages):
+            data = self._request(base, "GET", path, params=params)
+            bars.extend(data.get("bars", {}).get(symbol, []))
+            token = data.get("next_page_token")
+            if not token:
+                break
+            params["page_token"] = token
+        return bars
+
     def cancel_order(self, order_id: str) -> None:
         self._request(self.base_url, "DELETE", f"/v2/orders/{order_id}")
 

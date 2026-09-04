@@ -1,8 +1,10 @@
 # Alpaca Paper Trading Agent
 
-An LLM-assisted trading agent for Alpaca's **paper trading** environment.
-Each run: fetches your paper account/positions/quotes, asks Claude for a single buy/sell/hold
-decision, applies basic risk limits, and (only if you opt in) places the order.
+A machine-learning trading agent for Alpaca's **paper trading** environment.
+Each run: fetches recent bars for a fixed watchlist, asks a locally-trained classifier
+(`train_model.py` / `ml_decision.py`) for a single buy/sell/hold decision, applies basic risk
+limits, and (only if you opt in) places the order. No LLM/API call is involved at decision time —
+training happens offline, ahead of time, against historical data.
 
 **This is not investment advice, and it only talks to Alpaca's paper environment — no real
 money is ever involved unless you rewire it to point at the live trading API, which this project
@@ -19,34 +21,45 @@ deliberately does not do.**
    data URL is `https://data.alpaca.markets` (check Alpaca's docs — these are the current
    defaults baked into `.env.example`).
 
-## 2. Set up Anthropic access
-
-Get an API key from https://console.anthropic.com/settings/keys.
-
-## 3. Configure
+## 2. Configure
 
 ```bash
 cd /Users/flintwouters/project/trader-agent
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# edit .env: paste ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY, ANTHROPIC_API_KEY
+# edit .env: paste ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY
 ```
 
-**No fixed watchlist.** The agent can buy any tradable US-listed stock/ETF ticker (e.g. `AAPL`) or
-any Alpaca USD crypto pair (e.g. `BTC/USD`), and can sell/reduce anything it currently holds — it's
-not limited to a preset list. Orders are placed directly by ticker symbol (no instrument/Uic lookup
-step, unlike Saxo). Every symbol the model picks is validated against Alpaca's asset list before
-anything is sized or placed — an unrecognized or untradable symbol is simply logged as a rejected
-cycle, not an error.
+**Fixed watchlist.** Unlike an LLM, a trained classifier needs a known, consistent set of symbols
+to have historical data and features for — it can only ever propose a decision for a symbol in
+`WATCHLIST` (`.env`, default `config.DEFAULT_WATCHLIST`: `NVDA, TSLA, MSTR, COIN, SPY, ASML,
+BTC/USD, ETH/USD, SOL/USD`). It can still sell/reduce a leftover position outside the watchlist if
+one exists (e.g. from before a watchlist change), it just has no trained signal to act on it with,
+so those are left alone. Orders are placed directly by ticker symbol (no instrument/Uic lookup
+step, unlike Saxo). Every symbol is validated against Alpaca's asset list before anything is sized
+or placed — an unrecognized or untradable symbol is simply logged as a rejected cycle, not an error.
 
-Since it can now pick assets that trade at wildly different prices (a $190 stock vs. a $65,000
-Bitcoin), sizing and risk caps are dollar-based instead of share/coin-based: the model proposes a
-dollar amount (`amount_usd`) per trade, which gets converted to a quantity from the live price and
+Since the watchlist mixes assets that trade at wildly different prices (a $190 stock vs. a $65,000
+Bitcoin), sizing and risk caps are dollar-based instead of share/coin-based: the model's decision
+carries a dollar amount (`amount_usd`), which gets converted to a quantity from the live price and
 clamped by `MAX_ORDER_VALUE_USD` / `MAX_SYMBOL_EXPOSURE_USD` / `MAX_CONCURRENT_POSITIONS` (see
-`.env.example`). Separately, `RISK_APPETITE` (low/medium/high) steers what *kind* of assets the
-model favors picking — it's a prompt-level style knob, not another dollar cap. All four of these
-can also be viewed and edited live from the dashboard — see §5.
+`.env.example`). All three can also be viewed and edited live from the dashboard — see §6.
+
+## 3. Train the model
+
+```bash
+python3 train_model.py
+```
+
+Fetches ~2 years of daily bars per watchlist symbol, builds technical-indicator features
+(`features.py`), labels each row by its actual forward return, trains a
+`GradientBoostingClassifier`, prints an honest time-split evaluation (chronological, not random —
+so the reported accuracy isn't inflated by lookahead leakage), then refits on the full dataset and
+saves `model.joblib`. This is what `ml_decision.py` loads at cycle time — re-run it after changing
+`WATCHLIST` or `features.py`, or periodically to pick up more recent market data. `model.joblib`
+is gitignored (it's a derived artifact, regenerate rather than diff it); the VPS needs its own copy
+regenerated after deploy (see §8).
 
 ## 4. Run
 
@@ -59,7 +72,25 @@ python3 run.py --execute   # actually places the order on Alpaca paper trading (
 Every run appends a line to `decisions.jsonl` with the timestamp, the model's decision, and
 (if executed) the order result — use this as your audit trail.
 
-## 5. Dashboard
+## 5. How decisions are made
+
+`ml_decision.py` runs each cycle, mirroring the priority order the old prompt-based approach used:
+
+1. **Manage existing positions first.** For every watchlist symbol currently held, compute the
+   model's prediction; if any has a "sell" signal, sell the one with the highest sell probability.
+   Closing a bad position is treated as at least as important as opening a new one.
+2. **Otherwise, open the highest-confidence "buy" signal** among watchlist symbols not already
+   held — this naturally favors diversification over piling into one name.
+3. **Otherwise, hold.**
+
+The classifier only ever sees the three-day-ahead-return-based "buy"/"sell"/"hold" label it was
+trained on (`train_model.py`'s `BUY_THRESHOLD` / `SELL_THRESHOLD`, on a `LABEL_HORIZON_DAYS`-day
+forward return) and 17 technical-indicator features per symbol per day (SMA/EMA ratios, MACD,
+RSI14, Bollinger position/width, rolling volatility, momentum, volume ratio — see `features.py`).
+Every decision's rationale in `decisions.jsonl` records the predicted probabilities and the key
+indicator values that drove it, so the log stays as auditable as the old LLM rationale was.
+
+## 6. Dashboard
 
 ```bash
 python dashboard.py
@@ -95,19 +126,18 @@ machine. Leave it running in a terminal (or `tmux`/a background process) while y
 stops it. Equity snapshots are still throttled to once per 5 minutes even though the page polls
 every 15s, so `equity_history.jsonl` doesn't get flooded.
 
-**Risk settings panel.** The live dashboard also has a "Risk settings" card with four fields:
-`MAX_ORDER_VALUE_USD`, `MAX_SYMBOL_EXPOSURE_USD`, `MAX_CONCURRENT_POSITIONS`, and `RISK_APPETITE`
-(low/medium/high — steers what kind of assets get picked, doesn't change the dollar/count caps).
+**Risk settings panel.** The live dashboard also has a "Risk settings" card with three fields:
+`MAX_ORDER_VALUE_USD`, `MAX_SYMBOL_EXPOSURE_USD`, and `MAX_CONCURRENT_POSITIONS`.
 Each shows whether it's currently using its `.env` default or a saved override. Saving writes to
 `risk_overrides.json` (gitignored) — an override wins over `.env` until you hit "Reset all to .env
 defaults" (or delete the file). Because `run.py` is invoked fresh every ~15-minute cycle and rereads
 its config from disk each time, a dashboard edit takes effect on the very next cycle automatically —
-no restart, no redeploy. In the Docker setup (§7), this works across containers too: the dashboard
+no restart, no redeploy. In the Docker setup (§8), this works across containers too: the dashboard
 container writes `risk_overrides.json` into the same bind-mounted directory (`.:/app`) the
 `trader-agent` container reads from, so a browser edit on the VPS's dashboard reaches the trading
 loop's next cycle the same way.
 
-## 6. Automation (runs unattended, auto-executes trades)
+## 7. Automation (runs unattended, auto-executes trades)
 
 `automate.sh` runs one full cycle (`run.py --execute` then `dashboard.py`) and appends output to
 `automation.log`. A `com.traderagent.autorun.plist` is provided for macOS's `launchd` scheduler,
@@ -146,9 +176,9 @@ Note: `equity_history.jsonl` grows by one line every time `dashboard.py` runs, s
 installed that's roughly one snapshot per 15 minutes — harmless for a local file, and it builds a
 steady P&L trend.
 
-## 7. Docker (for running 24/7 on a remote VPS)
+## 8. Docker (for running 24/7 on a remote VPS)
 
-`automate.sh` + launchd (§6) only runs while **this Mac** is on, awake, and you're logged in —
+`automate.sh` + launchd (§7) only runs while **this Mac** is on, awake, and you're logged in —
 close the lid and it stops. To get genuine 24/7 unattended operation, run the same cycle in
 Docker on an always-on VPS instead. This ships two services (`docker-compose.yml`):
 
@@ -164,6 +194,9 @@ Both bind-mount the whole project directory into the container (`.:/app`), so `d
 # On the VPS, after copying this directory over (e.g. via scp/rsync — never through a public
 # git repo, since .env holds live API keys) and installing Docker:
 docker compose up -d --build
+docker compose exec trader-agent python3 train_model.py   # first deploy only — model.joblib is
+                                                            # gitignored, so this generates the
+                                                            # VPS's own copy for run.py to load
 docker compose logs -f trader-agent   # watch cycles fire
 ```
 
@@ -190,11 +223,14 @@ Alpaca's API surface can change between account types and API versions. The firs
 this, check in order:
 
 1. `get_account()` succeeds (auth is working).
-2. A full dry run (`python run.py`) produces a sensible decision on some symbol and logs it —
+2. `python3 train_model.py` completes and prints a time-split evaluation where predicted "buy"
+   rows average a higher forward return than predicted "sell" rows on held-out data (it warns
+   explicitly if not) — that's the model showing *some* real edge before it's trusted live.
+3. A full dry run (`python run.py`) produces a sensible decision on some symbol and logs it —
    check `decisions.jsonl` for the resolved `quantity`/`order_usd`, not just the model's raw ask.
-3. Try a symbol the model is unlikely to ever pick (a delisted ticker, a typo) isn't a concern —
-   `get_asset()` rejects anything Alpaca doesn't recognize before an order is ever built.
-4. Only then try `--execute` and confirm a paper order actually appears in your Alpaca paper
+4. A symbol outside the watchlist is not a concern — the model can never propose one, and
+   `get_asset()` also rejects anything Alpaca doesn't recognize before an order is ever built.
+5. Only then try `--execute` and confirm a paper order actually appears in your Alpaca paper
    account (dashboard → Orders).
 
 ## Limitations / next steps
@@ -202,21 +238,25 @@ this, check in order:
 - **No live trading path.** Switching to Alpaca's live trading API would require your own review
   of the risk controls in `risk.py` — treat that as a deliberate, separate decision, not a config flip.
 - **`run.py`/`dashboard.py` themselves are single-cycle** — `automate.sh` + the launchd job (see
-  §6) is what adds scheduling on top; there's no built-in polling loop inside the Python code itself.
+  §7) is what adds scheduling on top; there's no built-in polling loop inside the Python code itself.
 - **Risk controls cover order size, per-symbol exposure, and position count** — `risk.py` clamps
   per-order dollar size (`MAX_ORDER_VALUE_USD`), caps total open exposure per symbol
   (`MAX_SYMBOL_EXPOSURE_USD`, buy-only — selling to close is never blocked, and is separately capped
   to never exceed what's actually held), and caps the number of *distinct* symbols open at once
-  (`MAX_CONCURRENT_POSITIONS`) — all four editable live from the dashboard (§5). Still no daily-loss
+  (`MAX_CONCURRENT_POSITIONS`) — all three editable live from the dashboard (§6). Still no daily-loss
   limit, no portfolio-level (all-positions-combined) exposure cap, and no separate pause/kill switch
   beyond `EXECUTE=false`. Extend before trusting it with anything beyond small paper trades.
 - **Market hours — the whole cycle is skipped while the US stock market is closed.** `run.py`
-  checks Alpaca's clock first and returns immediately if the market is shut, before spending an
-  LLM call. The tradeoff is deliberate but worth knowing: **crypto trades 24/7, and this skip
+  checks Alpaca's clock first and returns immediately if the market is shut, before spending a
+  model call. The tradeoff is deliberate but worth knowing: **crypto trades 24/7, and this skip
   covers it too**, so held crypto is not managed overnight or at weekends. Trading resumes by
   itself at the next open.
-- **No live-quote grounding for brand-new symbols.** The model picks a new symbol from its own
-  knowledge (no quote is fed to it beforehand for anything it doesn't already hold) — a live quote
-  is only fetched afterward, to validate tradability and size the order. It won't invent an
-  untradable symbol into an actual trade, but its choice of *which* new symbol to open isn't based
-  on real-time price/spread the way its management of existing positions is.
+- **Fixed watchlist, not open-ended symbol choice.** Unlike the old LLM path, the model can only
+  ever act on `WATCHLIST` symbols — it has no way to discover or reason about a name it wasn't
+  trained on. Growing the watchlist means editing `.env` and re-running `train_model.py`.
+- **The model is only as good as its historical training data.** `train_model.py` labels rows by
+  a 5-trading-day forward return threshold on ~2 years of daily bars — it has no notion of news,
+  earnings, or regime change, and a symbol's past behavior is no guarantee of its future behavior.
+  Re-run `train_model.py` periodically so the model doesn't go stale against current market
+  conditions, and treat the printed time-split evaluation as the honest signal of whether it's
+  worth trusting, not a guarantee.

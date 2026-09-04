@@ -7,6 +7,11 @@ __pycache__/
 venv/
 .venv/
 
+# Trained model artifact — derived from train_model.py + live market data, not source. Regenerate
+# with train_model.py rather than committing/diffing the binary; the VPS needs its own copy too
+# (see README §8 Docker).
+model.joblib
+
 # Runtime output
 decisions.jsonl
 dashboard.html

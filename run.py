@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from alpaca_client import AlpacaClient, AlpacaError, normalize_crypto_symbol
 from config import Config, ConfigError
-from decision import DecisionError, build_prompt, get_decision, summarize_positions
+from ml_decision import MLDecisionError, get_ml_decision
 from risk import (
     blocks_new_symbol,
     clamp_order_value,
@@ -15,6 +15,7 @@ from risk import (
     pending_buy_exposure_value,
     pending_sell_quantity,
     round_quantity,
+    summarize_positions,
     total_exposure_value,
 )
 
@@ -35,7 +36,7 @@ def quote_price(quote: dict) -> float:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Alpaca paper-trading LLM trading agent — one decision cycle.")
+    parser = argparse.ArgumentParser(description="Alpaca paper-trading ML trading agent — one decision cycle.")
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -56,7 +57,7 @@ def main() -> int:
         f"max_order_value_usd={config.max_order_value_usd:g} | "
         f"max_symbol_exposure_usd={config.max_symbol_exposure_usd:g} | "
         f"max_concurrent_positions={config.max_concurrent_positions} | "
-        f"risk_appetite={config.risk_appetite}"
+        f"watchlist={','.join(config.watchlist)}"
     )
 
     alpaca = AlpacaClient(
@@ -74,7 +75,6 @@ def main() -> int:
         return 0
 
     try:
-        account = alpaca.get_account()
         positions = alpaca.get_positions()
         for p in positions:
             p["symbol"] = normalize_crypto_symbol(p.get("symbol", ""), p.get("asset_class"))
@@ -103,13 +103,9 @@ def main() -> int:
     position_summaries = summarize_positions(positions)
     open_symbols = open_symbol_set(position_summaries, open_orders)
 
-    prompt = build_prompt(
-        account, positions, quotes, open_orders,
-        open_position_count=len(open_symbols), max_concurrent_positions=config.max_concurrent_positions,
-    )
     try:
-        decision = get_decision(prompt, config.anthropic_api_key, config.risk_appetite)
-    except DecisionError as e:
+        decision = get_ml_decision(alpaca, position_summaries, config.watchlist, config.model_path)
+    except MLDecisionError as e:
         print(f"No decision this cycle: {e}", file=sys.stderr)
         return 0
 

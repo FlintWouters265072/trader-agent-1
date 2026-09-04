@@ -3,6 +3,24 @@ from __future__ import annotations
 import math
 
 
+def summarize_positions(positions: list[dict]) -> list[dict]:
+    """Alpaca's raw position dicts, reshaped into the flat symbol/amount/price fields the rest of
+    this module's exposure and quantity math expects. Short positions carry a negative `amount`
+    so total_exposure_value / held_quantity work off abs() uniformly for either side."""
+    summaries = []
+    for p in positions:
+        side = p.get("side", "long")
+        qty = float(p.get("qty", 0))
+        summaries.append({
+            "symbol": p.get("symbol", ""),
+            "amount": -qty if side == "short" else qty,
+            "open_price": float(p.get("avg_entry_price", 0) or 0),
+            "current_price": float(p.get("current_price", 0) or 0),
+            "unrealized_pl_in_base_currency": float(p.get("unrealized_pl", 0) or 0),
+        })
+    return summaries
+
+
 def clamp_order_value(requested_usd: float, max_order_value_usd: float) -> float:
     return max(0.0, min(requested_usd, max_order_value_usd))
 

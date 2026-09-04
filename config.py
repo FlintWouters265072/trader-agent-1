@@ -13,9 +13,23 @@ class ConfigError(RuntimeError):
 
 RISK_OVERRIDES_PATH = "risk_overrides.json"
 
+# The ML model only ever considers these symbols — unlike the old LLM path, which could name any
+# US-listed ticker or crypto pair from its own knowledge, a trained classifier needs a fixed,
+# known set of symbols to have historical data and consistent features for. Override with a
+# comma-separated WATCHLIST env var; train_model.py and run.py both read this same list, so
+# retraining after editing it is enough to bring a new symbol fully online.
+DEFAULT_WATCHLIST = ["NVDA", "TSLA", "MSTR", "COIN", "SPY", "ASML", "BTC/USD", "ETH/USD", "SOL/USD"]
+
+
+def get_watchlist() -> list[str]:
+    raw = os.environ.get("WATCHLIST", "").strip()
+    if not raw:
+        return list(DEFAULT_WATCHLIST)
+    return [s.strip().upper() for s in raw.split(",") if s.strip()]
+
 # Dollar/count-denominated risk caps are not share/coin counts, since the agent can pick any US
 # stock/ETF or Alpaca USD crypto pair, trading at wildly different prices (a share-count cap sane
-# for a stock would be dangerous applied to Bitcoin). All four settings here are viewable/editable
+# for a stock would be dangerous applied to Bitcoin). All three settings here are viewable/editable
 # live from the dashboard's "Risk settings" panel — see effective_risk_settings() below for the
 # override-file-over-.env precedence rule shared by both run.py and dashboard_server.py.
 RISK_SETTINGS = {
@@ -30,10 +44,6 @@ RISK_SETTINGS = {
     "max_concurrent_positions": {
         "env_var": "MAX_CONCURRENT_POSITIONS", "default": 8, "type": int,
         "min": 1, "max": 200, "label": "Max concurrent positions",
-    },
-    "risk_appetite": {
-        "env_var": "RISK_APPETITE", "default": "medium", "type": str,
-        "choices": ["low", "medium", "high"], "label": "Risk appetite",
     },
 }
 
@@ -113,18 +123,16 @@ class Config:
         self.alpaca_data_url = os.environ.get(
             "ALPACA_DATA_URL", "https://data.alpaca.markets"
         ).rstrip("/")
-        self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        self.watchlist = get_watchlist()
+        self.model_path = os.environ.get("MODEL_PATH", "model.joblib").strip()
 
         risk = effective_risk_settings()
         self.max_order_value_usd = risk["max_order_value_usd"]["value"]
         self.max_symbol_exposure_usd = risk["max_symbol_exposure_usd"]["value"]
         self.max_concurrent_positions = risk["max_concurrent_positions"]["value"]
-        self.risk_appetite = risk["risk_appetite"]["value"]
         self.execute = os.environ.get("EXECUTE", "false").strip().lower() == "true"
 
         if not self.alpaca_api_key_id or not self.alpaca_api_secret_key:
             raise ConfigError(
                 "ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY are not set. Copy .env.example to .env and fill them in."
             )
-        if not self.anthropic_api_key:
-            raise ConfigError("ANTHROPIC_API_KEY is not set. Copy .env.example to .env and fill it in.")
