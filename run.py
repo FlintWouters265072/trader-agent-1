@@ -104,7 +104,10 @@ def main() -> int:
     open_symbols = open_symbol_set(position_summaries, open_orders)
 
     try:
-        decision = get_ml_decision(alpaca, position_summaries, config.watchlist, config.model_path)
+        decision = get_ml_decision(
+            alpaca, position_summaries, config.watchlist, config.model_path,
+            open_symbols, config.max_concurrent_positions,
+        )
     except MLDecisionError as e:
         print(f"No decision this cycle: {e}", file=sys.stderr)
         return 0

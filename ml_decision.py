@@ -21,6 +21,7 @@ import joblib
 
 from alpaca_client import AlpacaClient, AlpacaError, is_crypto
 from features import FEATURE_COLUMNS, MIN_BARS_REQUIRED, bars_to_frame, compute_indicators
+from risk import blocks_new_symbol
 
 # Calendar days of history fetched per symbol per cycle — comfortably more than MIN_BARS_REQUIRED
 # trading days once weekends/holidays are accounted for, without hammering the bars endpoint.
@@ -87,7 +88,14 @@ def rationale_for(symbol: str, pred: dict) -> str:
     )
 
 
-def get_ml_decision(alpaca: AlpacaClient, position_summaries: list[dict], watchlist: list[str], model_path: str) -> dict:
+def get_ml_decision(
+    alpaca: AlpacaClient,
+    position_summaries: list[dict],
+    watchlist: list[str],
+    model_path: str,
+    open_symbols: set[str],
+    max_concurrent_positions: int,
+) -> dict:
     model_bundle = load_model(model_path)
     held = held_watchlist_symbols(position_summaries, watchlist)
 
@@ -112,23 +120,36 @@ def get_ml_decision(alpaca: AlpacaClient, position_summaries: list[dict], watchl
             "rationale": rationale_for(symbol, pred),
         }
 
-    # 2. Otherwise open the highest-confidence "buy" signal among symbols not already held.
+    # 2. Otherwise open the highest-confidence "buy" signal among symbols not already held — but
+    # only if there's actually room. Every buy candidate here is by definition a symbol not in
+    # `held`, so opening any of them is a brand-new position; skipping this check when the
+    # position cap is already full used to mean re-proposing the exact same doomed buy every
+    # cycle (run.py's blocks_new_symbol rejects it, nothing changes, repeat next cycle) until a
+    # slot happened to free up — sometimes for hours. Checking here instead means a full cap
+    # correctly falls through to a hold decision, same as the old LLM path did once a
+    # position-capacity note was added to its prompt.
     buy_candidates = {s: p for s, p in predictions.items() if s not in held and p["label"] == "buy"}
     if buy_candidates:
         symbol, pred = max(buy_candidates.items(), key=lambda kv: kv[1]["proba"]["buy"])
-        return {
-            "action": "buy", "symbol": symbol,
-            # Also a sentinel — run.py's clamp_order_value / clamp_to_exposure_cap_value always
-            # cut this down to the configured MAX_ORDER_VALUE_USD / MAX_SYMBOL_EXPOSURE_USD.
-            "amount_usd": 1_000_000_000.0,
-            "rationale": rationale_for(symbol, pred),
-        }
+        if not blocks_new_symbol(open_symbols, symbol, max_concurrent_positions):
+            return {
+                "action": "buy", "symbol": symbol,
+                # Also a sentinel — run.py's clamp_order_value / clamp_to_exposure_cap_value always
+                # cut this down to the configured MAX_ORDER_VALUE_USD / MAX_SYMBOL_EXPOSURE_USD.
+                "amount_usd": 1_000_000_000.0,
+                "rationale": rationale_for(symbol, pred),
+            }
 
     # 3. Nothing to do.
     hold_symbol = next(iter(held), "")
     if hold_symbol:
         pred = predictions.get(hold_symbol)
         rationale = rationale_for(hold_symbol, pred) if pred else f"Holding {hold_symbol}; no prediction available this cycle."
+    elif len(open_symbols) >= max_concurrent_positions:
+        rationale = (
+            f"No sell signal on anything held; at the {max_concurrent_positions}-position cap "
+            "so no new symbol can be opened even though one has a buy signal."
+        )
     else:
         rationale = "No sell signal on anything held and no buy signal on any watchlist symbol not already held."
     return {"action": "hold", "symbol": hold_symbol, "amount_usd": 0.0, "rationale": rationale}
